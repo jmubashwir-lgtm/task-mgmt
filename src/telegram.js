@@ -1,7 +1,7 @@
-// Telegram boss chat.
-// Out: the boss sends check-ins to Jawad's Telegram (send_message MCP tool, used by scheduled check-ins).
+// Telegram chat with Future_Jawad.
+// Out: Future_Jawad sends check-ins to Jawad's Telegram (send_message MCP tool, used by scheduled check-ins).
 // In:  Jawad replies in Telegram -> Telegram calls POST /telegram/webhook -> we ask Claude (Anthropic API),
-//      giving it the same Task Manager tools as the /mcp connector -> the boss replies in Telegram.
+//      giving it the same Task Manager tools as the /mcp connector -> Future_Jawad replies in Telegram.
 //
 // Env vars (all set in Render):
 //   TELEGRAM_BOT_TOKEN       from @BotFather
@@ -35,7 +35,7 @@ async function sendRaw(chatId, text) {
 
 const save = (role, content) => pool.query('INSERT INTO chat_messages (role, content) VALUES ($1, $2)', [role, content]);
 
-// Boss -> Jawad. Saved to history so the boss knows what it said when he replies.
+// Future_Jawad -> Jawad. Saved to history so Future_Jawad knows what it said when he replies.
 async function sendMessage(text) {
   if (!configured()) throw new Error('Telegram is not set up (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing)');
   await sendRaw(env('TELEGRAM_CHAT_ID'), text);
@@ -43,7 +43,7 @@ async function sendMessage(text) {
   return { sent: true };
 }
 
-// ---------- Claude (the boss brain for replies) ----------
+// ---------- Claude (Future_Jawad's brain for replies) ----------
 // Last 24 hours of chat, shaped the way the Anthropic API wants (alternating roles, user first).
 async function history() {
   const { rows } = await pool.query(
@@ -54,7 +54,7 @@ async function history() {
     if (last && last.role === m.role) last.content += `\n\n${m.content}`;
     else msgs.push({ role: m.role, content: m.content });
   }
-  if (msgs[0]?.role === 'assistant') msgs.unshift({ role: 'user', content: '(Boss check-in follows.)' });
+  if (msgs[0]?.role === 'assistant') msgs.unshift({ role: 'user', content: '(Future_Jawad check-in follows.)' });
   return msgs;
 }
 
@@ -69,11 +69,11 @@ async function claude(body) {
   return j;
 }
 
-// Run one boss reply: Claude may call Task Manager tools several times, then answers in text.
+// Run one Future_Jawad reply: Claude may call Task Manager tools several times, then answers in text.
 async function bossReply() {
   const { buildServer } = require('./mcp');   // required here to avoid a circular import
   const server = buildServer();
-  const client = new Client({ name: 'telegram-boss', version: '1.0.0' });
+  const client = new Client({ name: 'telegram-future-jawad', version: '1.0.0' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
   try {
@@ -121,7 +121,7 @@ async function handleUpdate(update) {
     return sendRaw(chatId, `Your chat id is ${chatId}. Put it in Render as TELEGRAM_CHAT_ID, then message me again.`);
   }
   if (chatId !== env('TELEGRAM_CHAT_ID')) return;   // ignore strangers
-  if (msg.text === '/start') return sendRaw(chatId, 'Boss line open. Check-ins will come here. Reply any time.');
+  if (msg.text === '/start') return sendRaw(chatId, 'Future_Jawad here. Check-ins will come to this chat. Reply any time.');
   await save('user', msg.text);
   if (!env('ANTHROPIC_API_KEY')) return sendRaw(chatId, 'Replies are not switched on yet (ANTHROPIC_API_KEY missing in Render).');
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
@@ -129,8 +129,8 @@ async function handleUpdate(update) {
     const text = await bossReply();
     if (text) await sendMessage(text);
   } catch (e) {
-    console.error('Telegram boss error', e);
-    await sendRaw(chatId, `Boss is offline: ${e.message}`).catch(() => {});
+    console.error('Telegram Future_Jawad error', e);
+    await sendRaw(chatId, `Future_Jawad is offline: ${e.message}`).catch(() => {});
   }
 }
 

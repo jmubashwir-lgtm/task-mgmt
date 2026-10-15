@@ -23,7 +23,7 @@ const { handleMcp } = require('./mcp');
 app.post('/mcp', handleMcp);
 app.all('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'Use POST' }));
 
-// Telegram boss chat
+// Telegram chat with Future_Jawad
 const telegram = require('./telegram');
 app.post('/telegram/webhook', telegram.webhook);
 app.get('/telegram/setup', telegram.setup);
@@ -36,7 +36,7 @@ app.get('/api/sprints/current', h(() => { const s = svc.sprintFor(); return svc.
 app.get('/api/sprints/:year/:number', h((r) => svc.sprintRange(+r.params.year, +r.params.number)));
 app.get('/api/summary', h(() => svc.summary()));
 
-// Boss: work record
+// Future_Jawad: work record
 app.get('/api/work/today', h(() => svc.today()));
 app.post('/api/work/clock-in', h(() => svc.clockIn()));
 app.post('/api/work/clock-out', h(() => svc.clockOut()));

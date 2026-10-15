@@ -42,7 +42,7 @@ const taskFields = {
 };
 
 function buildServer() {
-  // Standing instructions: every Claude session using this connector gets the boss persona
+  // Standing instructions: every Claude session using this connector gets the Future_Jawad persona
   const server = new McpServer({ name: 'task-mgmt', version: '1.1.0' },
     { instructions: `${boss.persona(svc.WORK_START, svc.WORK_END)}\n\nAt the start of a conversation call get_today. Scheduled check-ins call run_checkpoint.` });
 
@@ -191,8 +191,8 @@ function buildServer() {
 
   // ---------- scrum ceremonies ----------
   server.registerTool('run_checkpoint', {
-    title: 'Run boss checkpoint',
-    description: 'Used by scheduled check-ins. Returns the boss persona, the instructions for this checkpoint, and all the data needed (today, ceremonies due, sprint status, 30-day scorecard). Follow the instructions exactly.',
+    title: 'Run Future_Jawad checkpoint',
+    description: 'Used by scheduled check-ins. Returns the Future_Jawad persona, the instructions for this checkpoint, and all the data needed (today, ceremonies due, sprint status, 30-day scorecard). Follow the instructions exactly.',
     inputSchema: { name: z.enum(boss.CHECKPOINT_NAMES) },
     annotations: { readOnlyHint: true },
   }, run(async ({ name }) => {

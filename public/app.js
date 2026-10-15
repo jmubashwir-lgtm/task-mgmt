@@ -49,9 +49,9 @@ async function api(method, url, body) {
   if (res.status === 204) return null;
   const data = await res.json();
   if (!res.ok) {
-    // The boss refuses silent slips: ask for a reason and retry once with it.
+    // Future_Jawad refuses silent slips: ask for a reason and retry once with it.
     if (data.code === 'REASON_REQUIRED' && body && !body.reason) {
-      const why = prompt(`${data.error}\n\nWhy are you pushing this back? (Logged permanently.)`);
+      const why = prompt(`${data.error}\n\nWhy are you pushing this back? Future_Jawad wants a reason. (Logged permanently.)`);
       if (why && why.trim()) return api(method, url, { ...body, reason: why.trim() });
       throw new Error('Not moved — no reason, no slip.');
     }
@@ -697,7 +697,7 @@ async function renderScrum(main) {
         <div class="dgrid">${detailsHtml(c.details)}</div>
         ${c.task_ids.length && !Object.keys(c.details || {}).some((k) => k.endsWith('task_ids')) ? `<div class="tchips">${c.task_ids.map(taskChip).join('')}</div>` : ''}
       </article>`).join('')}</div>`
-      : `<div class="empty"><h3>No ceremonies recorded${filt ? ' of this type' : ''} in ${st.sprint}</h3><div>They're recorded when you run them with your boss in Claude.</div></div>`}
+      : `<div class="empty"><h3>No ceremonies recorded${filt ? ' of this type' : ''} in ${st.sprint}</h3><div>They're recorded when you run them with Future_Jawad in Claude.</div></div>`}
   </div>`;
 
   main.querySelectorAll('[data-sp]').forEach((b) => b.addEventListener('click', () => {

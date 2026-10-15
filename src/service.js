@@ -322,6 +322,25 @@ async function excuses(days = 30) {
 
 // ---------- scrum ceremonies ----------
 const KINDS = ['daily_scrum', 'sprint_planning', 'sprint_review', 'retrospective'];
+// Review + retro are run by Jawad from his own calendar, so they're never listed as "due".
+
+// Random check-in times for today: n times inside [from, to] London, at least gapMin apart, all in the future
+function randomCheckTimes(n = 2, from = '12:00', to = '16:00', gapMin = 60) {
+  const toMin = (hm) => { const [h, m] = hm.split(':').map(Number); return h * 60 + m; };
+  const nowMin = toMin(londonHm(new Date())) + 10;            // leave a little slack
+  const lo = Math.max(toMin(from), nowMin), hi = toMin(to);
+  if (hi - lo < gapMin * (n - 1)) return [];
+  let picks;
+  for (let tries = 0; tries < 200; tries++) {
+    picks = Array.from({ length: n }, () => lo + Math.floor(Math.random() * (hi - lo + 1))).sort((a, b) => a - b);
+    if (picks.every((p, i) => i === 0 || p - picks[i - 1] >= gapMin)) break;
+  }
+  const day = londonYmd();
+  return picks.map((m) => {
+    const hm = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    return { london: hm, utc: londonToIso(`${day} ${hm}`) };
+  });
+}
 const label = (y, n) => `${y}-S${String(n).padStart(2, '0')}`;
 
 // Which ceremonies are due on a date, and whether they've been recorded yet
@@ -334,7 +353,6 @@ async function ceremoniesDue(day = londonYmd()) {
   const due = [{ kind: 'daily_scrum', at: WORK_START }];
   const planningMissing = !held.includes('sprint_planning');
   if (day === wd[0] || planningMissing) due.push({ kind: 'sprint_planning', overdue: day !== wd[0] });
-  if (day === wd[wd.length - 1]) due.push({ kind: 'sprint_review' }, { kind: 'retrospective' });
   return due.map((d) => ({ ...d, sprint: label(sp.year, sp.number), recorded: held.includes(d.kind) }));
 }
 
@@ -425,6 +443,6 @@ module.exports = {
   listCategories, createCategory, updateCategory, deleteCategory,
   listTasks, getTask, createTask, updateTask, deleteTask, summary, bulkUpdate, bulkDelete,
   clockIn, clockOut, setCommitments, submitEod, today, scorecard, excuses,
-  ceremoniesDue, recordCeremony, listCeremonies, sprintStatus, WORK_START, WORK_END,
+  ceremoniesDue, recordCeremony, randomCheckTimes, listCeremonies, sprintStatus, WORK_START, WORK_END,
   sprintFor, sprintRange, STATUSES,
 };

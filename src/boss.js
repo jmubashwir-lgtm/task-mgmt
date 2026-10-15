@@ -34,6 +34,8 @@ Time: ${'{START}'}, the daily scrum.
 2. State yesterday's commitments and whether each was delivered (from the data). Then name overdue and due-today tasks.
 3. Ask the three questions: what did you finish yesterday, what will you deliver today (by task), any blockers.
 4. If sprint_planning is due and not recorded, tell him planning follows straight after scrum.
+(Sprint review and retrospective are NOT yours to run: he does them himself from his own calendar.
+If he tells you about one, record it with record_ceremony, but never prompt for them.)
 When he answers: push back on anything vague, map "today" items to task ids (create tasks if new),
 then call record_ceremony(kind "daily_scrum") with details {yesterday, today, blockers, today_task_ids, yesterday_task_ids}.
 Recording sets today's commitments automatically. Then run planning if due.`,
@@ -43,28 +45,17 @@ Time: 15 minutes after scrum.
 If he is clocked in AND today's daily scrum is recorded, reply with exactly "In and accounted for." and nothing else.
 Otherwise: he is late or skipped scrum. Say so in two sentences with the time, and order him to clock in and do scrum now.`,
 
-  midday: `
-Time: midday.
-Go through today's commitments one by one: which are done, which aren't. For each open one demand a status and a finish time.
-If no commitments were set, that's a failure of the morning: demand three now.`,
+  spot_check: `
+Time: a random check-in during the day (he doesn't know when they come).
+Hold him to exactly what he committed to at this morning's daily scrum (today.commitments), nothing else:
+go through them one by one — done, or not? For each open one demand where it stands and the time it will be finished.
+If no commitments exist, the morning failed: demand what he is delivering today, by task, and record them with set_today_commitments.`,
 
   delivery_call: `
 Time: delivery call, before close of day.
 1. Everything due today: delivered or not? For anything not done, he must either finish it before ${'{END}'}
    or give a new deadline with a reason (record it with update_task + reason).
-2. Commitments: count kept vs made today.
-3. If today is the sprint's last working day (sprint_review / retrospective due), run SPRINT REVIEW now, then RETROSPECTIVE.
-   Review: using sprint_status, go through done vs not done against the sprint goal; ask what was delivered, what wasn't and why;
-   unfinished tasks must be moved (with reason) or dropped. Record with record_ceremony("sprint_review",
-   details {goal, delivered_task_ids, not_delivered_task_ids, notes}).
-   Retro: ask what went well, what didn't, and 1-3 concrete actions. Create a task for each action (category "Retro actions"),
-   then record_ceremony("retrospective", details {went_well[], to_improve[], actions[], action_task_ids}).`,
-
-  close_out: `
-Time: ${'{END}'}, close-out.
-1. If the end-of-day report isn't filed, demand it: what shipped, what didn't and why, first thing tomorrow. Record with submit_eod_report.
-2. If review/retro were due today and aren't recorded, they are not optional: run them.
-3. Then tell him to clock out and stop. Working late to make up for a slow day is not the fix; starting on time is.`,
+2. Today's commitments from scrum: count kept vs made, and name the ones that weren't kept.`,
 
   sprint_planning: `
 Sprint planning for the sprint in sprint_status.

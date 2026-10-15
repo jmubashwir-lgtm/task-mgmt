@@ -169,7 +169,7 @@ function buildServer() {
   }, run(() => svc.clockOut()));
 
   server.registerTool('set_today_commitments', {
-    title: 'Set today\'s commitments', description: 'Record the task ids Jawad commits to delivering today (normally 3).',
+    title: 'Set today\'s commitments', description: 'Record the task ids Jawad commits to delivering today (what he said at daily scrum).',
     inputSchema: { ids: z.array(z.number().int()).min(1) },
   }, run(({ ids }) => svc.setCommitments(ids)));
 
@@ -197,7 +197,7 @@ function buildServer() {
   }, run(async ({ name }) => {
     const today = await svc.today();
     const sc = await svc.scorecard(30); delete sc.ledger;
-    const needsSprint = ['daily_scrum', 'delivery_call', 'close_out', 'sprint_planning'].includes(name);
+    const needsSprint = ['daily_scrum', 'sprint_planning'].includes(name);
     return {
       persona: boss.persona(svc.WORK_START, svc.WORK_END),
       checkpoint: name, instructions: boss.checkpoint(name, svc.WORK_START, svc.WORK_END),
@@ -206,6 +206,13 @@ function buildServer() {
       sprint_status: needsSprint ? await svc.sprintStatus() : undefined,
     };
   }));
+
+  server.registerTool('random_check_times', {
+    title: 'Random check-in times',
+    description: 'Truly random times for today\'s unannounced spot checks (default: 2 between 12:00 and 16:00 London, at least 60 minutes apart, all in the future). Returns London and UTC (RFC3339) times for scheduling.',
+    inputSchema: { count: z.number().int().min(1).max(4).optional(), from: z.string().optional(), to: z.string().optional() },
+    annotations: { readOnlyHint: true },
+  }, run(({ count, from, to }) => svc.randomCheckTimes(count || 2, from || '12:00', to || '16:00', 60)));
 
   server.registerTool('record_ceremony', {
     title: 'Record scrum ceremony',

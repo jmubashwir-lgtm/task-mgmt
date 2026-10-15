@@ -602,7 +602,7 @@ async function renderBoss(main) {
     t.clock_out ? `Worked ${t.clock_in}–${t.clock_out}.` : `In since ${t.clock_in}${t.late ? ' — late' : ' — on time'}.`;
   const commits = t.commitments.length
     ? `<ul class="tlist">${t.commitments.map(taskLine).join('')}</ul>`
-    : `<p class="muted">No commitments yet. Tick your top 3 tasks on the Board or List, then press <b>Commit today</b>.</p>`;
+    : `<p class="muted">No commitments yet. They're set at the daily scrum — or tick tasks on the Board or List and press <b>Commit today</b>.</p>`;
   const dueAndOverdue = [...t.overdue.map((x) => ({ ...x, status: null })), ...t.due_today.filter((x) => !t.overdue.some((o) => o.id === x.id))];
 
   main.innerHTML = `<div class="boss">
@@ -811,7 +811,7 @@ function wireBulk() {
     const ids = [...state.selected];
     try {
       await api('PUT', '/api/work/commitments', { ids });
-      toast(`Committed to ${ids.length} task${ids.length === 1 ? '' : 's'} today${ids.length > 3 ? ' — ambitious. Deliver.' : ''}`);
+      toast(`Committed to ${ids.length} task${ids.length === 1 ? '' : 's'} today`);
       state.selected.clear(); load();
     } catch (e) { toast(e.message); }
   });

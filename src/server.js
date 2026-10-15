@@ -23,6 +23,11 @@ const { handleMcp } = require('./mcp');
 app.post('/mcp', handleMcp);
 app.all('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'Use POST' }));
 
+// Telegram boss chat
+const telegram = require('./telegram');
+app.post('/telegram/webhook', telegram.webhook);
+app.get('/telegram/setup', telegram.setup);
+
 // Health check (Render pings this)
 app.get('/health', (_req, res) => res.json({ ok: true }));
 

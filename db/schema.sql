@@ -234,3 +234,12 @@ ALTER TABLE tasks ALTER COLUMN start_sprint SET NOT NULL;
 -- Some years have 27 sprints under the Monday-anchored calendar
 ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_sprint_number_check;
 ALTER TABLE tasks ADD CONSTRAINT tasks_sprint_number_check CHECK (sprint_number BETWEEN 1 AND 27);
+
+-- Telegram boss chat: message history so the boss remembers the conversation
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         SERIAL PRIMARY KEY,
+  role       TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS chat_messages_created_idx ON chat_messages (created_at);

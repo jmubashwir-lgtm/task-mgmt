@@ -7,6 +7,7 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { z } = require('zod');
 const svc = require('./service');
 const boss = require('./boss');
+const telegram = require('./telegram');
 const { keyLabel, currentKey, addSprints, key } = require('./sprint');
 
 const londonNow = () =>
@@ -253,6 +254,14 @@ function buildServer() {
     annotations: { readOnlyHint: true },
   }, run(async ({ date }) => { const s = svc.sprintFor(date); return svc.sprintRange(s.year, s.number); }));
 
+  // ---------- messaging ----------
+  server.registerTool('send_message', {
+    title: 'Send message to Jawad',
+    description: 'Send the boss\'s message to Jawad\'s Telegram. Scheduled check-ins use this to deliver their message. Plain text, no markdown. ' +
+      'His replies in Telegram are answered by the boss automatically.',
+    inputSchema: { text: z.string().min(1) },
+  }, run(({ text }) => telegram.sendMessage(text)));
+
   return server;
 }
 
@@ -270,4 +279,4 @@ async function handleMcp(req, res) {
   }
 }
 
-module.exports = { handleMcp };
+module.exports = { handleMcp, buildServer };

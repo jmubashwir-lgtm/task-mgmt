@@ -7,8 +7,9 @@ const { sprintFor, sprintRange, workingDays, key, keyLabel, currentKey, parseSpr
 // so the swatch colour is used instead.
 const ACCENTS = ['#383AFF', '#FB7C46', '#8146FF', '#7CFE86', '#FF3CE1', '#7BFDFD', '#FC3A5D', '#FCED67'];
 const STATUSES = ['todo', 'in_progress', 'done'];
+// A task has one sprint: its due sprint. (sprint_year/sprint_number are mirrored from it by the database.)
 const EDITABLE = ['name', 'category_id', 'status', 'notes', 'start_sprint', 'due_sprint', 'estimate_hours',
-                  'sprint_year', 'sprint_number', 'position', 'calendar_event_id'];
+                  'position', 'calendar_event_id'];
 const HOURS_PER_DAY = 8;   // capacity assumption for sprint planning
 
 class BadRequest extends Error { constructor(m) { super(m); this.status = 400; } }
@@ -94,7 +95,10 @@ function validate(t) {
   // Legacy inputs: an exact date is converted to the sprint it falls in
   if (t.deadline !== undefined && t.due_sprint === undefined) t.due_sprint = t.deadline ? key(...Object.values(sprintFor(String(t.deadline).slice(0, 10)))) : null;
   if (t.start_date !== undefined && t.start_sprint === undefined) t.start_sprint = t.start_date ? key(...Object.values(sprintFor(String(t.start_date).slice(0, 10)))) : null;
-  delete t.deadline; delete t.start_date;
+  // Legacy "sprint" inputs mean the due sprint
+  if (t.sprint_number !== undefined && t.due_sprint === undefined) t.due_sprint = key(t.sprint_year || sprintFor().year, Number(t.sprint_number));
+  delete t.deadline; delete t.start_date; delete t.sprint_year; delete t.sprint_number;
+  if (t.due_sprint === null) throw new BadRequest('A due sprint is required');
   try {
     if (t.start_sprint !== undefined) t.start_sprint = parseSprint(t.start_sprint);
     if (t.due_sprint !== undefined) t.due_sprint = parseSprint(t.due_sprint);
@@ -106,7 +110,6 @@ function validate(t) {
     t.estimate_hours = Math.round(h * 4) / 4;   // quarter-hour precision
   }
   if (t.status !== undefined && !STATUSES.includes(t.status)) throw new BadRequest(`status must be one of ${STATUSES.join(', ')}`);
-  if (t.sprint_number !== undefined && (t.sprint_number < 1 || t.sprint_number > 26)) throw new BadRequest('sprint_number must be 1-26');
 }
 
 async function listTasks(f = {}) {
@@ -114,8 +117,7 @@ async function listTasks(f = {}) {
   const add = (sql, v) => { args.push(v); where.push(sql.replace('?', `$${args.length}`)); };
   if (f.status) add('t.status = ?', f.status);
   if (f.category_id) add('t.category_id = ?', Number(f.category_id));
-  if (f.sprint_year) add('t.sprint_year = ?', Number(f.sprint_year));
-  if (f.sprint_number) add('t.sprint_number = ?', Number(f.sprint_number));
+  if (f.sprint_number) add('t.due_sprint = ?', key(Number(f.sprint_year) || sprintFor().year, Number(f.sprint_number)));
   if (f.overdue === 'true' || f.overdue === true) where.push(`t.due_sprint < current_sprint_key() AND t.status <> 'done'`);
   if (f.due_sprint) add('t.due_sprint = ?', parseSprint(f.due_sprint));
   if (f.q) add('t.name ILIKE ?', `%${f.q}%`);
@@ -134,17 +136,10 @@ async function createTask(input) {
   if (!input.name || !input.name.trim()) throw new BadRequest('Task name is required');
   await resolveCategory(input);
   validate(input);
-  // Defaults: worked in the current sprint, starting and due in that same sprint.
-  // If only a due sprint is given, the task is planned into that sprint.
-  if (!input.sprint_number) {
-    const k = input.due_sprint || currentKey();
-    input.sprint_year = Math.floor(k / 100); input.sprint_number = k % 100;
-  }
-  if (!input.sprint_year) input.sprint_year = sprintFor().year;
-  const planned = key(input.sprint_year, input.sprint_number);
-  if (!input.start_sprint) input.start_sprint = Math.min(planned, input.due_sprint || planned);
-  if (input.due_sprint === undefined) input.due_sprint = Math.max(planned, input.start_sprint);
-  if (input.due_sprint && input.start_sprint > input.due_sprint) throw new BadRequest('Start sprint must not be after the due sprint');
+  // Defaults: due this sprint; work starts this sprint (or at the due sprint, if that's earlier)
+  if (!input.due_sprint) input.due_sprint = Math.max(currentKey(), input.start_sprint || 0);
+  if (!input.start_sprint) input.start_sprint = Math.min(currentKey(), input.due_sprint);
+  if (input.start_sprint > input.due_sprint) throw new BadRequest('Start sprint must not be after the due sprint');
   // New tasks go to the bottom of their column.
   if (input.position === undefined) {
     input.position = (await pool.query('SELECT COALESCE(max(position), 0) + 1 AS p FROM tasks')).rows[0].p;
@@ -194,21 +189,14 @@ async function bulkUpdate(ids, input = {}) {
 
   if (input.status !== undefined) set.push(`status = ${param(input.status)}`);
   if (input.category_id !== undefined) set.push(`category_id = ${param(input.category_id)}`);
-  if (input.sprint_next) {
-    // Every task moves one sprint forward from wherever it is (S26 rolls into next year's S01)
-    set.push(`sprint_number = CASE WHEN sprint_number = 26 THEN 1 ELSE sprint_number + 1 END`);
-    set.push(`sprint_year   = CASE WHEN sprint_number = 26 THEN sprint_year + 1 ELSE sprint_year END`);
-  } else if (input.sprint_number !== undefined) {
-    set.push(`sprint_number = ${param(input.sprint_number)}`);
-    set.push(`sprint_year = ${param(input.sprint_year || sprintFor().year)}`);
-  }
-  if (input.due_sprint !== undefined) set.push(`due_sprint = ${param(input.due_sprint)}`);
+  if (input.sprint_next) input.due_shift_sprints = 1;   // "next sprint" = due one sprint later
+  if (input.due_sprint) set.push(`due_sprint = ${param(input.due_sprint)}`);
   else if (input.due_shift_sprints) {
     const n = Number(input.due_shift_sprints);
     if (!Number.isInteger(n)) throw new BadRequest('due_shift_sprints must be an integer');
     // sprint key -> running sprint count -> shifted -> back to key (handles year boundaries)
     const ord = `((due_sprint / 100) * 26 + (due_sprint % 100) - 1 + ${param(n)})`;
-    set.push(`due_sprint = CASE WHEN due_sprint IS NULL THEN NULL ELSE (${ord} / 26) * 100 + (${ord} % 26) + 1 END`);
+    set.push(`due_sprint = (${ord} / 26) * 100 + (${ord} % 26) + 1`);
   }
   if (input.estimate_hours !== undefined) set.push(`estimate_hours = ${param(input.estimate_hours)}`);
   if (!set.length) throw new BadRequest('Nothing to change');
@@ -419,7 +407,7 @@ async function listCeremonies({ kind, sprint_year, sprint_number, limit = 100 } 
 async function sprintStatus(year, number) {
   if (!year || !number) { const c = sprintFor(); year = c.year; number = c.number; }
   const r = sprintRange(year, number), wd = workingDays(year, number);
-  const tasks = (await pool.query(`${TASK_SELECT} WHERE t.sprint_year = $1 AND t.sprint_number = $2 ORDER BY t.position`, [year, number])).rows;
+  const tasks = (await pool.query(`${TASK_SELECT} WHERE t.due_sprint = $1 ORDER BY t.position`, [key(year, number)])).rows;
   const ev = (await pool.query(
     `SELECT * FROM task_events WHERE created_at >= $1::date AND created_at < ($2::date + 1)`, [r.start, r.end])).rows;
   const cer = (await pool.query('SELECT kind, day FROM ceremonies WHERE sprint_year = $1 AND sprint_number = $2', [year, number])).rows;
@@ -427,7 +415,6 @@ async function sprintStatus(year, number) {
   const t = (x) => ({ id: x.id, name: x.name, status: x.status, category: x.category_name, due_sprint: keyLabel(x.due_sprint),
     estimate_hours: x.estimate_hours, slipped: x.sprint_update_count });
   const hrs = (list) => list.reduce((a, x) => a + (x.estimate_hours || 0), 0);
-  const dueHere = (await pool.query(`${TASK_SELECT} WHERE t.due_sprint = $1 AND NOT (t.sprint_year = $2 AND t.sprint_number = $3)`, [key(year, number), year, number])).rows;
   const planning = (await pool.query(`SELECT details FROM ceremonies WHERE kind = 'sprint_planning' AND sprint_year = $1 AND sprint_number = $2`, [year, number])).rows[0];
   return {
     sprint: r.label, start: r.start, end: r.end, working_days: wd.length, working_days_elapsed: elapsed.length,
@@ -439,7 +426,6 @@ async function sprintStatus(year, number) {
     hours: { estimated_total: hrs(tasks), estimated_open: hrs(tasks.filter((x) => x.status !== 'done')),
       unestimated_tasks: tasks.filter((x) => x.estimate_hours == null).length,
       capacity: wd.length * HOURS_PER_DAY, capacity_note: `${wd.length} working days × ${HOURS_PER_DAY}h` },
-    due_here_but_planned_elsewhere: dueHere.map(t),
     completed_in_window: { on_time: ev.filter((e) => e.kind === 'completed' && e.on_time).length, late: ev.filter((e) => e.kind === 'completed' && !e.on_time).length },
     excuses_in_window: ev.filter((e) => e.reason).map((e) => ({ task: e.task_name, change: `${e.old_value} → ${e.new_value}`, reason: e.reason })),
     ceremonies: {
@@ -458,10 +444,10 @@ async function summary() {
     SELECT
       (count(*) FILTER (WHERE status <> 'done' AND due_sprint < current_sprint_key()))::int       AS overdue,
       (count(*) FILTER (WHERE status <> 'done' AND due_sprint = current_sprint_key()))::int       AS due_this_sprint,
-      COALESCE(sum(estimate_hours) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status <> 'done'), 0)::float AS open_hours_in_sprint,
-      (count(*) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status <> 'done'))::int AS open_in_sprint,
-      (count(*) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status = 'done'))::int  AS done_in_sprint
-    FROM tasks`, [cur.year, cur.number]);
+      COALESCE(sum(estimate_hours) FILTER (WHERE due_sprint = $1 AND status <> 'done'), 0)::float AS open_hours_in_sprint,
+      (count(*) FILTER (WHERE due_sprint = $1 AND status <> 'done'))::int AS open_in_sprint,
+      (count(*) FILTER (WHERE due_sprint = $1 AND status = 'done'))::int  AS done_in_sprint
+    FROM tasks`, [key(cur.year, cur.number)]);
   return { current_sprint: sprintRange(cur.year, cur.number), sprint_capacity_hours: workingDays(cur.year, cur.number).length * HOURS_PER_DAY, ...rows[0] };
 }
 

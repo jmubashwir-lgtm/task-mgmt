@@ -49,6 +49,12 @@ CREATE INDEX IF NOT EXISTS tasks_due_sprint_idx ON tasks (due_sprint);
 --    no matter who edits the task (web UI, Claude, or SQL).
 CREATE OR REPLACE FUNCTION tasks_before_update() RETURNS trigger AS $$
 BEGIN
+  -- The task's sprint IS its due sprint (sprint_year/number are kept only as a mirror of due_sprint)
+  IF NEW.due_sprint IS NOT NULL THEN
+    NEW.sprint_year := NEW.due_sprint / 100;
+    NEW.sprint_number := NEW.due_sprint % 100;
+    IF NEW.start_sprint IS NULL OR NEW.start_sprint > NEW.due_sprint THEN NEW.start_sprint := NEW.due_sprint; END IF;
+  END IF;
   NEW.updated_at := now();
   IF (NEW.sprint_year, NEW.sprint_number) IS DISTINCT FROM (OLD.sprint_year, OLD.sprint_number) THEN
     NEW.sprint_update_count := OLD.sprint_update_count + 1;
@@ -103,7 +109,7 @@ CREATE OR REPLACE FUNCTION tasks_audit() RETURNS trigger AS $$
 DECLARE
   why        TEXT := NULLIF(current_setting('app.reason', true), '');
   dl_slip    BOOLEAN := OLD.due_sprint IS NOT NULL AND (NEW.due_sprint IS NULL OR NEW.due_sprint > OLD.due_sprint);
-  sp_slip    BOOLEAN := (NEW.sprint_year, NEW.sprint_number) > (OLD.sprint_year, OLD.sprint_number);
+  sp_slip    BOOLEAN := false;   -- sprint mirrors due_sprint now; slips are judged on due_sprint
 BEGIN
   IF (dl_slip OR sp_slip) AND OLD.status <> 'done' AND why IS NULL THEN
     RAISE EXCEPTION 'REASON_REQUIRED: "%" is being pushed back', OLD.name;
@@ -116,7 +122,8 @@ BEGIN
             CASE WHEN NEW.due_sprint IS NULL THEN 'none' ELSE (NEW.due_sprint / 100) || '-S' || lpad((NEW.due_sprint % 100)::text, 2, '0') END,
             CASE WHEN dl_slip THEN why END);
   END IF;
-  IF (NEW.sprint_year, NEW.sprint_number) IS DISTINCT FROM (OLD.sprint_year, OLD.sprint_number) THEN
+  IF (NEW.sprint_year, NEW.sprint_number) IS DISTINCT FROM (OLD.sprint_year, OLD.sprint_number)
+     AND NEW.due_sprint IS NOT DISTINCT FROM OLD.due_sprint THEN
     INSERT INTO task_events (task_id, task_name, kind, old_value, new_value, reason)
     VALUES (NEW.id, NEW.name, 'sprint_moved',
             OLD.sprint_year || '-S' || lpad(OLD.sprint_number::text, 2, '0'),
@@ -176,3 +183,35 @@ BEGIN
     ALTER TABLE tasks ENABLE TRIGGER tasks_audit;
   END IF;
 END $$;
+
+-- =====================================================================
+-- 8. One sprint per task: the due sprint. (Runs once: aligns the mirrored
+--    sprint columns, makes due_sprint required, and syncs new inserts.)
+-- =====================================================================
+CREATE OR REPLACE FUNCTION tasks_before_insert() RETURNS trigger AS $$
+BEGIN
+  IF NEW.due_sprint IS NULL THEN NEW.due_sprint := current_sprint_key(); END IF;
+  NEW.sprint_year := NEW.due_sprint / 100;
+  NEW.sprint_number := NEW.due_sprint % 100;
+  IF NEW.start_sprint IS NULL OR NEW.start_sprint > NEW.due_sprint THEN NEW.start_sprint := NEW.due_sprint; END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS tasks_before_insert ON tasks;
+CREATE TRIGGER tasks_before_insert BEFORE INSERT ON tasks FOR EACH ROW EXECUTE FUNCTION tasks_before_insert();
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM tasks WHERE due_sprint IS NULL OR sprint_year * 100 + sprint_number <> due_sprint OR start_sprint > due_sprint) THEN
+    ALTER TABLE tasks DISABLE TRIGGER tasks_before_update;
+    ALTER TABLE tasks DISABLE TRIGGER tasks_audit;
+    UPDATE tasks SET due_sprint = sprint_year * 100 + sprint_number WHERE due_sprint IS NULL;
+    UPDATE tasks SET sprint_year = due_sprint / 100, sprint_number = due_sprint % 100,
+                     start_sprint = LEAST(start_sprint, due_sprint)
+    WHERE sprint_year * 100 + sprint_number <> due_sprint OR start_sprint > due_sprint;
+    ALTER TABLE tasks ENABLE TRIGGER tasks_before_update;
+    ALTER TABLE tasks ENABLE TRIGGER tasks_audit;
+  END IF;
+END $$;
+ALTER TABLE tasks ALTER COLUMN due_sprint SET NOT NULL;
+ALTER TABLE tasks ALTER COLUMN start_sprint SET NOT NULL;

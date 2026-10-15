@@ -38,7 +38,7 @@ function sprintOptions(selected, { none = false } = {}) {
   }).join('');
 }
 const fmtStamp = (iso) => new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-const sprintKey = (t) => `${t.sprint_year}-${t.sprint_number}`;
+const sprintKey = (t) => `${Math.floor(t.due_sprint / 100)}-${t.due_sprint % 100}`;   // a task's sprint = its due sprint
 const sprintLabel = (y, n) => `${y}-S${pad(n)}`;
 const isOverdue = (t) => !!t.due_sprint && t.status !== 'done' && t.due_sprint < Sprint.currentKey();
 const today = () => ymd(new Date());
@@ -119,7 +119,7 @@ function groups(tasks) {
         return {
           key: `${y}-${n}`, title: r.label + (isCur ? ' · current' : ''),
           sub: `${fmtDate(r.start)} – ${fmtDate(r.end)}`, color: isCur ? '#65BC7B' : null,
-          match: (t) => t.sprint_year === y && t.sprint_number === n, patch: { sprint_year: y, sprint_number: n },
+          match: (t) => t.due_sprint === Sprint.key(y, n), patch: { due_sprint: Sprint.key(y, n) },
         };
       });
   }
@@ -131,7 +131,6 @@ function groups(tasks) {
     { key: 'next', title: `Due next sprint · ${Sprint.keyLabel(nxt)}`, match: (t) => t.due_sprint === nxt },
     { key: 'later', title: 'Due later', match: (t) => t.due_sprint > nxt },
     { key: 'past-done', title: 'Earlier (done)', match: (t) => t.due_sprint && t.due_sprint < cur && t.status === 'done' },
-    { key: 'none', title: 'No due sprint', color: '#B0B0B4', match: (t) => !t.due_sprint },
   ].map((x) => ({ ...x, locked: true }))
    .filter((x) => x.key !== 'past-done' || tasks.some(x.match));
 }
@@ -177,7 +176,6 @@ function catChip(t) {
 function infoChips(t) {
   return [
     t.due_sprint ? `<span class="chip ${isOverdue(t) ? 'overdue' : ''}">${isOverdue(t) ? 'Overdue · ' : 'Due '}${Sprint.keyLabel(t.due_sprint)}</span>` : '',
-    Sprint.key(t.sprint_year, t.sprint_number) !== t.due_sprint ? `<span class="chip" title="Sprint it's being worked in">In ${sprintLabel(t.sprint_year, t.sprint_number)}</span>` : '',
     t.estimate_hours != null ? `<span class="chip est" title="Estimated work hours">${t.estimate_hours}h</span>` : '',
     t.sprint_update_count ? `<span class="chip slipped" title="Sprint changed ${t.sprint_update_count} time(s)">Slipped ×${t.sprint_update_count}</span>` : '',
     t.notes ? `<span class="chip notes" title="Has notes">notes</span>` : '',
@@ -266,7 +264,7 @@ function renderBoard(main, tasks) {
 
 function renderList(main, tasks) {
   const gs = groups(tasks);
-  main.innerHTML = `<div class="row-head"><span></span><span>Task</span><span class="hide-m">Category</span><span class="hide-m">Status</span><span>Due</span><span class="hide-m">Sprint</span><span class="hide-m">Est.</span><span class="hide-m">Updated</span></div>` +
+  main.innerHTML = `<div class="row-head"><span></span><span>Task</span><span class="hide-m">Category</span><span class="hide-m">Status</span><span>Due</span><span class="hide-m">Start</span><span class="hide-m">Est.</span><span class="hide-m">Updated</span></div>` +
     gs.map((g) => {
       const items = tasks.filter(g.match);
       return `<section class="group">
@@ -279,8 +277,8 @@ function renderList(main, tasks) {
             <span class="name">${esc(t.name)}</span>
             <span class="cell hide-m">${catChip(t) || '—'}</span>
             <span class="cell hide-m"><span class="status-tag ${t.status}">${STATUS[t.status]}</span></span>
-            <span class="cell" style="${isOverdue(t) ? 'color:var(--red)' : ''}">${dueLabel(t.due_sprint)}</span>
-            <span class="cell hide-m">${sprintLabel(t.sprint_year, t.sprint_number)}${t.sprint_update_count ? ` <span class="chip slipped">×${t.sprint_update_count}</span>` : ''}</span>
+            <span class="cell" style="${isOverdue(t) ? 'color:var(--red)' : ''}">${dueLabel(t.due_sprint)}${t.sprint_update_count ? ` <span class="chip slipped">×${t.sprint_update_count}</span>` : ''}</span>
+            <span class="cell hide-m">${dueLabel(t.start_sprint)}</span>
             <span class="cell hide-m">${t.estimate_hours != null ? `${t.estimate_hours}h` : '—'}</span>
             <span class="cell hide-m">${new Date(t.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
           </div>`).join('') || ''}</div>
@@ -310,7 +308,7 @@ function wireDrag(main, gs, itemSel) {
           : prev != null ? prev + 1 : next != null ? next - 1 : 0;
         const patch = { position };
         if (evt.from !== evt.to) Object.assign(patch, byKey[evt.to.dataset.key].patch);
-        if (patch.sprint_number) toast(`Moved to ${sprintLabel(patch.sprint_year, patch.sprint_number)} — slip count +1`);
+        if (patch.due_sprint) toast(`Due → ${Sprint.keyLabel(patch.due_sprint)}`);
         patchTask(id, patch);
       },
     });
@@ -327,7 +325,7 @@ function wireDrag(main, gs, itemSel) {
 function renderGantt(main, tasks) {
   const SW = window.innerWidth <= 760 ? 92 : 130;           // width of one sprint column
   const cur = Sprint.currentKey();
-  const startOf = (t) => t.start_sprint || Sprint.key(t.sprint_year, t.sprint_number);
+  const startOf = (t) => t.start_sprint || t.due_sprint;
   const dueOf = (t) => Math.max(t.due_sprint || startOf(t), startOf(t));
   const rows = [...tasks].sort((a, b) => startOf(a) - startOf(b) || dueOf(a) - dueOf(b) || a.position - b.position);
   let from = Math.min(Sprint.addSprints(cur, -1), ...rows.map(startOf));
@@ -345,7 +343,7 @@ function renderGantt(main, tasks) {
     const rr = Sprint.sprintRange(...Object.values(Sprint.fromKey(k)));
     return `<div class="g-sp ${k === cur ? 'g-cur' : ''}" style="left:${i * SW}px;width:${SW}px">
       <b>${rr.label.slice(5)}</b> <span>${fmtDate(rr.start)}–${fmtDate(rr.end)}</span>
-      <em>${hoursIn(rows.filter((t) => t.sprint_year * 100 + t.sprint_number === k && t.status !== 'done'))}</em></div>`;
+      <em>${hoursIn(rows.filter((t) => t.due_sprint === k && t.status !== 'done'))}</em></div>`;
   }).join('');
   const bg = cols.map((k, i) => `<div class="g-band ${k === cur ? 'g-cur' : ''}" style="left:${i * SW}px;width:${SW}px"></div>`).join('')
     + `<div class="g-todayline" style="left:${todayX}px"></div>`;
@@ -420,22 +418,6 @@ function wireBar(bar, SW, startOf, dueOf) {
 }
 
 // ---------- drawer (create / edit) ----------
-function fillSprintSelects(year, number) {
-  const f = $('#taskForm'), y0 = currentSprint().year;
-  f.sprint_year.innerHTML = [y0 - 1, y0, y0 + 1].map((y) => `<option>${y}</option>`).join('');
-  f.sprint_year.value = year;
-  const fillNums = () => {
-    const y = +f.sprint_year.value;
-    f.sprint_number.innerHTML = Array.from({ length: 26 }, (_, i) => {
-      const r = Sprint.sprintRange(y, i + 1);
-      return `<option value="${i + 1}">S${pad(i + 1)} · ${fmtDate(r.start)} – ${fmtDate(r.end)}</option>`;
-    }).join('');
-  };
-  fillNums();
-  f.sprint_year.onchange = fillNums;
-  f.sprint_number.value = number;
-}
-
 function setStatus(v) {
   $('#statusSeg').dataset.value = v;
   document.querySelectorAll('#statusSeg button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
@@ -452,11 +434,10 @@ function openDrawer(task, draft = {}) {
   f.name.value = t.name || '';
   f.category.value = catName;
   setStatus(t.status || draft.status || 'todo');
-  const planned = Sprint.key(t.sprint_year || draft.sprint_year || cur.year, t.sprint_number || draft.sprint_number || cur.number);
-  f.start_sprint.innerHTML = sprintOptions(task ? t.start_sprint : planned);
-  f.due_sprint.innerHTML = sprintOptions(task ? t.due_sprint : (draft.due_sprint || planned), { none: true });
+  const due0 = task ? t.due_sprint : (draft.due_sprint || Sprint.key(cur.year, cur.number));
+  f.start_sprint.innerHTML = sprintOptions(task ? t.start_sprint : Math.min(Sprint.key(cur.year, cur.number), due0));
+  f.due_sprint.innerHTML = sprintOptions(due0);
   f.estimate_hours.value = t.estimate_hours ?? '';
-  fillSprintSelects(t.sprint_year || draft.sprint_year || cur.year, t.sprint_number || draft.sprint_number || cur.number);
   f.notes.value = t.notes || '';
   $('#deleteBtn').hidden = !task;
   $('#meta').innerHTML = task ? `
@@ -465,12 +446,9 @@ function openDrawer(task, draft = {}) {
     <dt>Sprint moved</dt><dd>${task.sprint_update_count} time${task.sprint_update_count === 1 ? '' : 's'}</dd>
     <dt>Calendar</dt><dd>${task.calendar_event_id ? 'Time blocked' : '—'}</dd>` : '';
   $('#meta').hidden = !task;
-  // New task: picking a due sprint plans the task into that sprint too
-  f.due_sprint.onchange = () => {
-    if (state.editing || !f.due_sprint.value) return;
-    const s = Sprint.fromKey(+f.due_sprint.value);
-    fillSprintSelects(s.year, s.number);
-  };
+  // Keep start ≤ due while editing
+  f.due_sprint.onchange = () => { if (+f.start_sprint.value > +f.due_sprint.value) f.start_sprint.value = f.due_sprint.value; };
+  f.start_sprint.onchange = () => { if (+f.start_sprint.value > +f.due_sprint.value) f.due_sprint.value = f.start_sprint.value; };
   $('#drawer').classList.add('open'); $('#drawer').setAttribute('aria-hidden', 'false');
   $('#scrim').hidden = false;
   setTimeout(() => f.name.focus(), 50);
@@ -488,10 +466,8 @@ async function saveDrawer(e) {
     name: f.name.value.trim(),
     status: $('#statusSeg').dataset.value,
     start_sprint: +f.start_sprint.value,
-    due_sprint: f.due_sprint.value ? +f.due_sprint.value : null,
+    due_sprint: +f.due_sprint.value,
     estimate_hours: f.estimate_hours.value === '' ? null : +f.estimate_hours.value,
-    sprint_year: +f.sprint_year.value,
-    sprint_number: +f.sprint_number.value,
     notes: f.notes.value.trim() || null,
   };
   const cat = f.category.value.trim();
@@ -743,18 +719,10 @@ function renderBulk() {
   $('#bulkBar').hidden = !n;
   if (!n) return;
   $('#bulkCount').textContent = `${n} selected`;
-  // Sprint choices: current sprint + the next 12
-  const sel = $('#bSprint');
+  const sel = $('#bDue');
   if (!sel.dataset.filled) {
-    let { year, number } = currentSprint(); const opts = [];
-    for (let i = 0; i < 13; i++) {
-      const r = Sprint.sprintRange(year, number);
-      opts.push(`<option value="${year}-${number}">${r.label} · ${fmtDate(r.start)}</option>`);
-      number === 26 ? (year++, number = 1) : number++;
-    }
-    sel.innerHTML = `<option value="">Sprint…</option><option value="next">→ Next sprint (each)</option>` + opts.join('');
     sel.dataset.filled = '1';
-    $('#bDue').innerHTML = `<option value="">Due…</option>` + sprintOptions(null) + `<option value="none">No due sprint</option>`;
+    sel.innerHTML = `<option value="">Due sprint…</option>` + sprintOptions(null);
   }
 }
 
@@ -778,16 +746,8 @@ function wireBulk() {
   };
   $('#bCatApply').addEventListener('click', setCat);
   $('#bCategory').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setCat(); } });
-  $('#bSprint').addEventListener('change', (e) => {
-    const v = e.target.value; e.target.value = '';
-    if (!v) return;
-    if (v === 'next') return bulk({ sprint_next: true }, 'Moved to next sprint (slip +1)');
-    const [y, n] = v.split('-').map(Number);
-    bulk({ sprint_year: y, sprint_number: n }, `Sprint → ${sprintLabel(y, n)}`);
-  });
   $('#bDue').addEventListener('change', (e) => {
     const v = e.target.value; e.target.value = '';
-    if (v === 'none') return bulk({ due_sprint: null }, 'Due sprint cleared');
     if (v) bulk({ due_sprint: +v }, `Due → ${Sprint.keyLabel(+v)}`);
   });
   document.querySelectorAll('[data-shift]').forEach((b) => b.addEventListener('click', () => {

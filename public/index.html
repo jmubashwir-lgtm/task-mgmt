@@ -78,12 +78,6 @@
         <label class="field"><span>Start sprint</span><select name="start_sprint"></select></label>
         <label class="field"><span>Due sprint</span><select name="due_sprint"></select></label>
       </div>
-      <label class="field"><span>Sprint</span>
-        <div class="row2 tight">
-          <select name="sprint_year"></select>
-          <select name="sprint_number"></select>
-        </div>
-      </label>
       <label class="field"><span>Estimate <em class="mono">work hours to deliver</em></span>
         <input name="estimate_hours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="e.g. 3.5"></label>
       <label class="field"><span>Notes</span><textarea name="notes" rows="4"></textarea></label>
@@ -103,7 +97,6 @@
       <option value="">Status…</option><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option>
     </select>
     <span class="bgroup"><input id="bCategory" list="catList" placeholder="Category…" aria-label="Set category"><button class="bbtn" id="bCatApply">Set</button></span>
-    <select id="bSprint" aria-label="Set sprint"></select>
     <span class="bsep"></span>
     <select id="bDue" aria-label="Set due sprint"></select>
     <span class="bgroup"><button class="bbtn" data-shift="-1" title="Due one sprint earlier">Due −1</button><button class="bbtn" data-shift="1" title="Due one sprint later (needs a reason)">Due +1</button></span>

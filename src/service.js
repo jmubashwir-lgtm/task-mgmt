@@ -194,9 +194,7 @@ async function bulkUpdate(ids, input = {}) {
   else if (input.due_shift_sprints) {
     const n = Number(input.due_shift_sprints);
     if (!Number.isInteger(n)) throw new BadRequest('due_shift_sprints must be an integer');
-    // sprint key -> running sprint count -> shifted -> back to key (handles year boundaries)
-    const ord = `((due_sprint / 100) * 26 + (due_sprint % 100) - 1 + ${param(n)})`;
-    set.push(`due_sprint = (${ord} / 26) * 100 + (${ord} % 26) + 1`);
+    set.push(`due_sprint = sprint_add(due_sprint, ${param(n)})`);   // sprint calendar maths lives in SQL too
   }
   if (input.estimate_hours !== undefined) set.push(`estimate_hours = ${param(input.estimate_hours)}`);
   if (!set.length) throw new BadRequest('Nothing to change');

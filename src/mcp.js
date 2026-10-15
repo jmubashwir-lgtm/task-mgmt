@@ -105,7 +105,7 @@ function buildServer() {
   server.registerTool('move_to_sprint', {
     title: 'Move to sprint',
     description: 'Move a task\'s due sprint ("next" = one sprint later). Moving it later is a slip: needs a reason and increases the moved count.',
-    inputSchema: { id: z.number().int(), sprint: z.union([z.literal('next'), z.number().int().min(1).max(26)]), sprint_year: z.number().int().optional(),
+    inputSchema: { id: z.number().int(), sprint: z.union([z.literal('next'), z.number().int().min(1).max(27)]), sprint_year: z.number().int().optional(),
   reason: z.string().optional().describe('Required when pushing a deadline later or moving to a later sprint. Get it from Jawad — never invent one.'),
     },
   }, run(async ({ id, sprint, sprint_year, reason }) => {
@@ -226,7 +226,7 @@ function buildServer() {
       details: z.record(z.string(), z.any()).optional(),
       task_ids: z.array(z.number().int()).optional().describe('Any other tasks discussed'),
       date: z.string().optional().describe('YYYY-MM-DD; defaults to today (London)'),
-      sprint_number: z.number().int().min(1).max(26).optional().describe('Defaults to the sprint containing the date'),
+      sprint_number: z.number().int().min(1).max(27).optional().describe('Defaults to the sprint containing the date'),
       sprint_year: z.number().int().optional(),
     },
   }, run((a) => svc.recordCeremony(a)));

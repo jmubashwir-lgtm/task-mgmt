@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   start_date           DATE NOT NULL DEFAULT CURRENT_DATE,  -- left edge of the Gantt bar
   deadline             TIMESTAMPTZ,                         -- right edge of the Gantt bar
   sprint_year          INT NOT NULL,
-  sprint_number        INT NOT NULL CHECK (sprint_number BETWEEN 1 AND 26),
+  sprint_number        INT NOT NULL CHECK (sprint_number BETWEEN 1 AND 27),
   sprint_update_count  INT NOT NULL DEFAULT 0,
   position             DOUBLE PRECISION NOT NULL DEFAULT 0, -- order inside a column (drag & drop)
   calendar_event_id    TEXT,                                -- Google Calendar block linked to this task
@@ -33,8 +33,23 @@ CREATE INDEX IF NOT EXISTS tasks_deadline_idx ON tasks (deadline);
 
 -- 2b. Sprint-based planning (replaces exact dates; start_date/deadline are kept only as legacy data)
 --     A sprint is stored as one comparable number: year*100 + sprint, e.g. 2026-S22 = 202622.
+-- Sprint calendar (mirrors src/sprint.js): 2-week sprints starting on Mondays, anchored on Mon 14 Sep 2026.
+-- A sprint belongs to the year it starts in; S01 = first sprint starting on/after 1 Jan.
+CREATE OR REPLACE FUNCTION sprint_first_index(y INT) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
+  SELECT ceil((make_date(y, 1, 1) - DATE '2026-09-14') / 14.0)::int
+$$;
+CREATE OR REPLACE FUNCTION sprint_key_of_index(i INT) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
+  SELECT extract(year FROM DATE '2026-09-14' + i * 14)::int * 100
+       + (i - sprint_first_index(extract(year FROM DATE '2026-09-14' + i * 14)::int) + 1)
+$$;
+CREATE OR REPLACE FUNCTION sprint_index(k INT) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
+  SELECT sprint_first_index(k / 100) + (k % 100) - 1
+$$;
 CREATE OR REPLACE FUNCTION sprint_key(d DATE) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
-  SELECT extract(year FROM d)::int * 100 + least((extract(doy FROM d)::int - 1) / 14 + 1, 26)
+  SELECT sprint_key_of_index(floor((d - DATE '2026-09-14') / 14.0)::int)
+$$;
+CREATE OR REPLACE FUNCTION sprint_add(k INT, n INT) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
+  SELECT sprint_key_of_index(sprint_index(k) + n)
 $$;
 CREATE OR REPLACE FUNCTION current_sprint_key() RETURNS INT STABLE LANGUAGE sql AS $$
   SELECT sprint_key((now() AT TIME ZONE 'Europe/London')::date)
@@ -215,3 +230,7 @@ BEGIN
 END $$;
 ALTER TABLE tasks ALTER COLUMN due_sprint SET NOT NULL;
 ALTER TABLE tasks ALTER COLUMN start_sprint SET NOT NULL;
+
+-- Some years have 27 sprints under the Monday-anchored calendar
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_sprint_number_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_sprint_number_check CHECK (sprint_number BETWEEN 1 AND 27);

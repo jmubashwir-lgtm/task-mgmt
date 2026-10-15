@@ -108,7 +108,7 @@ function groups(tasks) {
   }
   if (g === 'sprint') {
     const cur = currentSprint();
-    const nxt = cur.number === 26 ? { year: cur.year + 1, number: 1 } : { year: cur.year, number: cur.number + 1 };
+    const nxt = Sprint.fromKey(Sprint.addSprints(Sprint.key(cur.year, cur.number), 1));
     const keys = new Set([...tasks.map(sprintKey), `${cur.year}-${cur.number}`, `${nxt.year}-${nxt.number}`]);
     return [...keys]
       .map((k) => k.split('-').map(Number))
@@ -336,7 +336,7 @@ function renderGantt(main, tasks) {
 
   // today's position inside the current sprint
   const r = Sprint.sprintRange(...Object.values(Sprint.fromKey(cur)));
-  const span = dayDiff(r.start, r.end) + 1, into = dayDiff(r.start, today()) + 0.5;
+  const span = 14, into = Math.min(dayDiff(r.start, today()) + 0.5, span);   // 14 calendar days per sprint
   const todayX = idx(cur) * SW + (into / span) * SW;
 
   const head = cols.map((k, i) => {
@@ -701,10 +701,8 @@ async function renderScrum(main) {
   </div>`;
 
   main.querySelectorAll('[data-sp]').forEach((b) => b.addEventListener('click', () => {
-    let { year: y, number: n } = state.scrumSprint;
-    n += +b.dataset.sp;
-    if (n < 1) { y--; n = 26; } if (n > 26) { y++; n = 1; }
-    state.scrumSprint = { year: y, number: n }; render();
+    const { year: y, number: n } = state.scrumSprint;
+    state.scrumSprint = Sprint.fromKey(Sprint.addSprints(Sprint.key(y, n), +b.dataset.sp)); render();
   }));
   main.querySelectorAll('[data-kind]').forEach((b) => b.addEventListener('click', () => { state.scrumKind = b.dataset.kind; render(); }));
   main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', () => {

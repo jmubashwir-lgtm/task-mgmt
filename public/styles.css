@@ -143,14 +143,14 @@ main { padding: 0 24px 40px; }
 .gantt { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: auto; max-height: calc(100vh - 230px); position: relative; }
 .g-grid { position: relative; }
 .g-head { position: sticky; top: 0; z-index: 6; background: var(--surface); border-bottom: 1px solid var(--line); display: flex; }
-.g-corner { position: sticky; left: 0; z-index: 7; background: var(--surface); width: 240px; flex: none; border-right: 1px solid var(--line); padding: 8px 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: flex; align-items: flex-end; }
+.g-corner { position: sticky; left: 0; z-index: 7; background: var(--surface); width: var(--lw, 260px); flex: none; border-right: 1px solid var(--line); padding: 8px 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: flex; align-items: flex-end; }
 .g-scale { position: relative; height: 58px; flex: none; }
 .g-sprint { position: absolute; top: 0; height: 22px; font-family: var(--mono); font-size: 11px; padding: 3px 6px; border-left: 1px solid var(--line); color: var(--g500); white-space: nowrap; overflow: hidden; }
 .g-day { position: absolute; top: 24px; height: 34px; font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: center; border-left: 1px solid var(--line); line-height: 1.2; padding-top: 4px; }
 .g-day.wkend { color: #B0B0B4; }
 .g-day.today { color: var(--green); font-weight: 600; }
 .g-row { display: flex; height: 44px; border-bottom: 1px solid var(--line); }
-.g-label { position: sticky; left: 0; z-index: 5; width: 240px; flex: none; background: var(--surface); border-right: 1px solid var(--line); padding: 0 14px; display: flex; align-items: center; gap: 8px; cursor: pointer; overflow: hidden; }
+.g-label { position: sticky; left: 0; z-index: 5; width: var(--lw, 260px); flex: none; background: var(--surface); border-right: 1px solid var(--line); padding: 0 14px; display: flex; align-items: center; gap: 8px; cursor: pointer; overflow: hidden; }
 .g-label span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-label:hover span { text-decoration: underline; }
 .g-track { position: relative; flex: none; }
@@ -361,5 +361,5 @@ body.selecting .toast { bottom: 86px; }
   .boss-hero { flex-direction: column; align-items: flex-start; }
   .clock { position: absolute; top: 12px; right: 52px; }
   .row .cell.hide-m, .row-head .hide-m { display: none; }
-  .g-corner, .g-label { width: 140px; }
+  .g-corner, .g-label { width: var(--lw, 140px); }
 }

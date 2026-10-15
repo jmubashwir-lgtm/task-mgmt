@@ -5,7 +5,7 @@ Personal task manager planned in 2-week sprints (start/due sprint, hour estimate
 ## Structure
 ```
 db/schema.sql      tables + trigger (last-updated, sprint-moved count)
-src/sprint.js      2-week Gregorian sprints (S01 = 1–14 Jan), shared with the browser
+src/sprint.js      Mon–Fri 2-week sprints anchored on 14 Sep 2026, shared with the browser
 src/service.js     all task/category rules (used by API and MCP)
 src/server.js      Express: REST API, static UI, /mcp
 src/mcp.js         Claude connector tools

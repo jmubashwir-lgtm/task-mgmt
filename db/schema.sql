@@ -119,3 +119,22 @@ DROP TRIGGER IF EXISTS tasks_audit ON tasks;
 CREATE TRIGGER tasks_audit
   AFTER UPDATE ON tasks
   FOR EACH ROW EXECUTE FUNCTION tasks_audit();
+
+-- =====================================================================
+-- 6. Scrum ceremonies (summaries of what Jawad told the boss)
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS ceremonies (
+  id             SERIAL PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('daily_scrum', 'sprint_planning', 'sprint_review', 'retrospective')),
+  day            DATE NOT NULL,                 -- London date it was held
+  sprint_year    INT  NOT NULL,
+  sprint_number  INT  NOT NULL,
+  summary        TEXT NOT NULL,                 -- Claude's short summary
+  details        JSONB NOT NULL DEFAULT '{}',   -- structured answers (yesterday/today/blockers, goal, went_well…)
+  task_ids       INT[] NOT NULL DEFAULT '{}',   -- tasks discussed / committed
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- One daily scrum per day; one planning/review/retro per sprint (re-recording updates it)
+CREATE UNIQUE INDEX IF NOT EXISTS ceremonies_daily_uq  ON ceremonies (day) WHERE kind = 'daily_scrum';
+CREATE UNIQUE INDEX IF NOT EXISTS ceremonies_sprint_uq ON ceremonies (kind, sprint_year, sprint_number) WHERE kind <> 'daily_scrum';

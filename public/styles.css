@@ -287,6 +287,47 @@ body.selecting .toast { bottom: 86px; }
 .ledger td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); }
 .ledger td.bad { color: var(--red); } .ledger td.warn { color: var(--orange); }
 
+/* ---------- Scrum ceremonies ---------- */
+.scrum { display: flex; flex-direction: column; gap: 16px; }
+.sprint-head { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.sprint-nav { display: flex; align-items: center; gap: 12px; }
+.sprint-nav h2 { margin: 2px 0 0; font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+.sprint-nav .icon-btn { font-size: 22px; border: 1px solid var(--line); width: 36px; height: 36px; border-radius: 10px; }
+.cur { font-size: 11px; font-weight: 400; color: var(--g500); border: 1px solid var(--g300); border-radius: 999px; padding: 2px 8px; vertical-align: middle; }
+.goal { font-size: 15px; }
+.progress { height: 8px; background: var(--col-bg); border-radius: 999px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--green); border-radius: 999px; }
+.prog-l { font-size: 11px; color: var(--muted); }
+.cers, .due-cers { display: flex; gap: 8px; flex-wrap: wrap; }
+.due-cers { margin-top: 10px; }
+.cer { font-family: var(--mono); font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.boss-hero .cer { border-color: #3A3A3E; color: #9A9A9E; }
+.cer.ok { border-color: var(--green); color: var(--g500); }
+.boss-hero .cer.ok { color: var(--g300); }
+.cer.bad { border-color: var(--red); color: var(--red); }
+.kind-filter { display: flex; gap: 8px; flex-wrap: wrap; }
+.kf { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.kf.on { border-color: var(--text); }
+.kdot { width: 8px; height: 8px; border-radius: 50%; }
+.k-plan { --k: #383AFF; } .k-daily { --k: #65BC7B; } .k-review { --k: #FB7C46; } .k-retro { --k: #8146FF; }
+.kdot { background: var(--k); }
+.cer-list { display: flex; flex-direction: column; gap: 12px; }
+.cer-card { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--k, var(--green)); border-radius: 12px; padding: 14px 18px; }
+.cer-card:has(.k-plan) { --k: #383AFF; } .cer-card:has(.k-review) { --k: #FB7C46; } .cer-card:has(.k-retro) { --k: #8146FF; } .cer-card:has(.k-daily) { --k: #65BC7B; }
+.cer-top { display: flex; justify-content: space-between; align-items: center; }
+.kbadge { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--k); font-weight: 500; }
+.cer-sum { margin: 8px 0 10px; font-size: 15px; }
+.dgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 20px; }
+.dsec p { margin: 2px 0 0; white-space: pre-wrap; }
+.dsec ul { margin: 2px 0 0; padding-left: 18px; }
+.dlabel { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.tchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.tchip { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 4px 8px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.tchip span { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.tchip.done { text-decoration: line-through; color: var(--muted); }
+.tchip.in_progress span { color: var(--g500); }
+.tchip.gone { opacity: .5; cursor: default; }
+
 /* ---------- Mobile ---------- */
 @media (max-width: 760px) {
   .topbar { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }

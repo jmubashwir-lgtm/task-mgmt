@@ -1,7 +1,7 @@
 // All task/category logic lives here. Both the web API and (Step 3) the
 // Claude MCP endpoint call these same functions, so behaviour is identical.
 const { pool } = require('./db');
-const { sprintFor, sprintRange } = require('./sprint');
+const { sprintFor, sprintRange, workingDays } = require('./sprint');
 
 // Brand accents. Order spreads contrast; the guideline's 'Green' hex (#5C47C7) is a typo,
 // so the swatch colour is used instead.
@@ -209,7 +209,7 @@ async function bulkDelete(ids) {
 }
 
 // ---------- boss: work record ----------
-const WORK_START = process.env.WORK_START || '09:00';
+const WORK_START = process.env.WORK_START || '10:00';   // daily scrum time = clock-in deadline
 const WORK_END = process.env.WORK_END || '18:00';
 const TODAY = `(now() AT TIME ZONE 'Europe/London')::date`;
 const londonYmd = (d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(d);
@@ -257,6 +257,7 @@ async function today() {
     eod_report: wd.eod_report || null,
     due_today: dueToday.map((t) => ({ id: t.id, name: t.name, status: t.status, deadline: t.deadline })),
     overdue: overdue.map((t) => ({ id: t.id, name: t.name, deadline: t.deadline, sprint_moved_count: t.sprint_update_count })),
+    ceremonies_due: await ceremoniesDue(day),
   };
 }
 
@@ -307,6 +308,7 @@ async function scorecard(days = 30) {
       late: completed.filter((e) => !e.on_time).length, slips_with_excuses: slips.length, overdue_now: overdueNow },
     commitments: { committed, kept, kept_pct: committed ? Math.round((kept / committed) * 100) : null },
     eod_reports: { due: eodDue, filed: eodFiled },
+    daily_scrums: { held: (await pool.query(`SELECT count(*)::int AS n FROM ceremonies WHERE kind = 'daily_scrum' AND day >= $1`, [start])).rows[0].n, working_days: expected },
     ledger: ledger.reverse(),
   };
 }
@@ -316,6 +318,93 @@ async function excuses(days = 30) {
     `SELECT task_id, task_name, kind, old_value, new_value, reason, created_at FROM task_events
      WHERE reason IS NOT NULL AND created_at >= now() - make_interval(days => $1) ORDER BY created_at DESC`, [Number(days) || 30]);
   return rows;
+}
+
+// ---------- scrum ceremonies ----------
+const KINDS = ['daily_scrum', 'sprint_planning', 'sprint_review', 'retrospective'];
+const label = (y, n) => `${y}-S${String(n).padStart(2, '0')}`;
+
+// Which ceremonies are due on a date, and whether they've been recorded yet
+async function ceremoniesDue(day = londonYmd()) {
+  const sp = sprintFor(day), wd = workingDays(sp.year, sp.number);
+  if (!wd.includes(day)) return [];
+  const held = (await pool.query(
+    `SELECT kind FROM ceremonies WHERE (kind = 'daily_scrum' AND day = $1)
+        OR (kind <> 'daily_scrum' AND sprint_year = $2 AND sprint_number = $3)`, [day, sp.year, sp.number])).rows.map((r) => r.kind);
+  const due = [{ kind: 'daily_scrum', at: WORK_START }];
+  const planningMissing = !held.includes('sprint_planning');
+  if (day === wd[0] || planningMissing) due.push({ kind: 'sprint_planning', overdue: day !== wd[0] });
+  if (day === wd[wd.length - 1]) due.push({ kind: 'sprint_review' }, { kind: 'retrospective' });
+  return due.map((d) => ({ ...d, sprint: label(sp.year, sp.number), recorded: held.includes(d.kind) }));
+}
+
+async function recordCeremony({ kind, summary, details = {}, task_ids = [], date, sprint_year, sprint_number }) {
+  if (!KINDS.includes(kind)) throw new BadRequest(`kind must be one of ${KINDS.join(', ')}`);
+  if (!summary || !summary.trim()) throw new BadRequest('summary is required');
+  const day = date || londonYmd();
+  const sp = sprint_number ? { year: sprint_year || sprintFor(day).year, number: sprint_number } : sprintFor(day);
+  const ids = [...new Set([...(task_ids || []), ...Object.entries(details).filter(([k]) => k.endsWith('task_ids')).flatMap(([, v]) => v || [])])].map(Number);
+  if (ids.length) {
+    const found = (await pool.query('SELECT id FROM tasks WHERE id = ANY($1)', [ids])).rows.length;
+    if (found !== ids.length) throw new BadRequest('Some task ids do not exist');
+  }
+  const where = kind === 'daily_scrum' ? 'kind = $1 AND day = $2' : 'kind = $1 AND sprint_year = $3 AND sprint_number = $4';
+  const vals = [kind, day, sp.year, sp.number, summary.trim(), JSON.stringify(details), ids];
+  let { rows } = await pool.query(
+    `UPDATE ceremonies SET summary = $5, details = $6, task_ids = $7, updated_at = now(), day = $2, sprint_year = $3, sprint_number = $4
+     WHERE ${where} RETURNING *`, vals);
+  if (!rows[0]) {
+    ({ rows } = await pool.query(
+      `INSERT INTO ceremonies (kind, day, sprint_year, sprint_number, summary, details, task_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, vals));
+  }
+  // Daily scrum "today" items become today's commitments (what the boss holds you to)
+  if (kind === 'daily_scrum' && day === londonYmd() && details.today_task_ids?.length) await setCommitments(details.today_task_ids);
+  return rows[0];
+}
+
+async function listCeremonies({ kind, sprint_year, sprint_number, limit = 100 } = {}) {
+  const where = [], args = [];
+  const add = (sql, v) => { args.push(v); where.push(sql.replace('?', `$${args.length}`)); };
+  if (kind) add('kind = ?', kind);
+  if (sprint_year) add('sprint_year = ?', Number(sprint_year));
+  if (sprint_number) add('sprint_number = ?', Number(sprint_number));
+  args.push(Math.min(Number(limit) || 100, 500));
+  const { rows } = await pool.query(
+    `SELECT * FROM ceremonies ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY day DESC, id DESC LIMIT $${args.length}`, args);
+  const ids = [...new Set(rows.flatMap((r) => r.task_ids))];
+  const tasks = ids.length ? Object.fromEntries((await pool.query('SELECT id, name, status FROM tasks WHERE id = ANY($1)', [ids])).rows.map((t) => [t.id, t])) : {};
+  return rows.map((r) => ({ ...r, sprint: label(r.sprint_year, r.sprint_number),
+    tasks: r.task_ids.map((id) => tasks[id] || { id, name: '(deleted task)', status: null }) }));
+}
+
+// Everything needed to run planning, review or retro for a sprint
+async function sprintStatus(year, number) {
+  if (!year || !number) { const c = sprintFor(); year = c.year; number = c.number; }
+  const r = sprintRange(year, number), wd = workingDays(year, number);
+  const tasks = (await pool.query(`${TASK_SELECT} WHERE t.sprint_year = $1 AND t.sprint_number = $2 ORDER BY t.position`, [year, number])).rows;
+  const ev = (await pool.query(
+    `SELECT * FROM task_events WHERE created_at >= $1::date AND created_at < ($2::date + 1)`, [r.start, r.end])).rows;
+  const cer = (await pool.query('SELECT kind, day FROM ceremonies WHERE sprint_year = $1 AND sprint_number = $2', [year, number])).rows;
+  const today = londonYmd(), elapsed = wd.filter((d) => d <= today);
+  const t = (x) => ({ id: x.id, name: x.name, status: x.status, category: x.category_name, deadline: x.deadline, slipped: x.sprint_update_count });
+  const planning = (await pool.query(`SELECT details FROM ceremonies WHERE kind = 'sprint_planning' AND sprint_year = $1 AND sprint_number = $2`, [year, number])).rows[0];
+  return {
+    sprint: r.label, start: r.start, end: r.end, working_days: wd.length, working_days_elapsed: elapsed.length,
+    first_working_day: wd[0], last_working_day: wd[wd.length - 1],
+    goal: planning?.details?.goal || null,
+    done: tasks.filter((x) => x.status === 'done').map(t),
+    in_progress: tasks.filter((x) => x.status === 'in_progress').map(t),
+    todo: tasks.filter((x) => x.status === 'todo').map(t),
+    completed_in_window: { on_time: ev.filter((e) => e.kind === 'completed' && e.on_time).length, late: ev.filter((e) => e.kind === 'completed' && !e.on_time).length },
+    excuses_in_window: ev.filter((e) => e.reason).map((e) => ({ task: e.task_name, change: `${e.old_value} → ${e.new_value}`, reason: e.reason })),
+    ceremonies: {
+      sprint_planning: cer.some((c) => c.kind === 'sprint_planning'),
+      daily_scrums: `${cer.filter((c) => c.kind === 'daily_scrum').length}/${elapsed.length}`,
+      sprint_review: cer.some((c) => c.kind === 'sprint_review'),
+      retrospective: cer.some((c) => c.kind === 'retrospective'),
+    },
+  };
 }
 
 // Overview used by Claude and the UI header.
@@ -336,5 +425,6 @@ module.exports = {
   listCategories, createCategory, updateCategory, deleteCategory,
   listTasks, getTask, createTask, updateTask, deleteTask, summary, bulkUpdate, bulkDelete,
   clockIn, clockOut, setCommitments, submitEod, today, scorecard, excuses,
+  ceremoniesDue, recordCeremony, listCeremonies, sprintStatus, WORK_START, WORK_END,
   sprintFor, sprintRange, STATUSES,
 };

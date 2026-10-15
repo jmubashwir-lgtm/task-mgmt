@@ -155,8 +155,8 @@ function renderChrome() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   $('#groupBy').value = state.groupBy;
   $('#zoom').value = String(state.zoom);
-  $('#groupWrap').hidden = state.view === 'gantt' || state.view === 'boss';
-  document.querySelector('.filters').style.visibility = state.view === 'boss' ? 'hidden' : '';
+  $('#groupWrap').hidden = ['gantt', 'boss', 'scrum'].includes(state.view);
+  document.querySelector('.filters').style.visibility = ['boss', 'scrum'].includes(state.view) ? 'hidden' : '';
   renderClock();
   $('#zoomWrap').hidden = state.view !== 'gantt';
 }
@@ -227,6 +227,7 @@ function render() {
   const main = $('#view');
   if (!state.tasks.length) { main.innerHTML = EMPTY; return; }
   if (state.view === 'boss') return renderBoss(main);
+  if (state.view === 'scrum') return renderScrum(main);
   if (state.view === 'gantt') return renderGantt(main, tasks);
   if (state.view === 'list') return renderList(main, tasks);
   return renderBoard(main, tasks);
@@ -609,7 +610,8 @@ async function renderBoss(main) {
       <div>
         <div class="overline mono">${esc(dateLabel)} · hours ${t.work_hours}</div>
         <h2>${esc(status)}</h2>
-        <div class="mono hero-sub">On-time streak: <b>${a.streak_on_time}</b> day${a.streak_on_time === 1 ? '' : 's'}</div>
+        <div class="mono hero-sub">On-time streak: <b>${a.streak_on_time}</b> day${a.streak_on_time === 1 ? '' : 's'} · Daily scrums <b>${sc.daily_scrums.held}/${sc.daily_scrums.working_days}</b></div>
+        ${t.ceremonies_due.length ? `<div class="due-cers">${t.ceremonies_due.map((c) => `<span class="cer ${c.recorded ? 'ok' : c.overdue ? 'bad' : ''}">${c.recorded ? '✓' : '○'} ${KIND[c.kind].label}${c.kind === 'daily_scrum' ? ` ${c.at}` : ''}${c.overdue && !c.recorded ? ' — overdue' : ''}</span>`).join('')}</div>` : ''}
       </div>
       <div class="hero-actions">
         ${!t.clock_in ? `<button class="btn green" data-clock>Clock in</button>` : !t.clock_out ? `<button class="btn ghost" data-clock>Clock out</button>` : ''}
@@ -650,6 +652,91 @@ async function renderBoss(main) {
     try { await api('POST', '/api/work/eod', { report: $('#eodText').value }); toast('Report filed'); load(); }
     catch (e) { toast(e.message); }
   });
+}
+
+// ---------- scrum ceremonies view ----------
+const KIND = {
+  sprint_planning: { label: 'Sprint planning', cls: 'k-plan' },
+  daily_scrum: { label: 'Daily scrum', cls: 'k-daily' },
+  sprint_review: { label: 'Sprint review', cls: 'k-review' },
+  retrospective: { label: 'Retrospective', cls: 'k-retro' },
+};
+const human = (k) => k.replace(/_task_ids$/, '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const taskChip = (id) => {
+  const t = state.tasks.find((x) => x.id === id);
+  return `<button class="tchip ${t ? t.status : 'gone'}" data-open="${id}">${t ? esc(t.name) : '(deleted task)'}${t ? `<span>${STATUS[t.status]}</span>` : ''}</button>`;
+};
+function detailsHtml(d) {
+  return Object.entries(d || {}).filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && !v.length)).map(([k, v]) => {
+    let body;
+    if (k.endsWith('task_ids')) body = `<div class="tchips">${v.map(Number).map(taskChip).join('')}</div>`;
+    else if (Array.isArray(v)) body = `<ul>${v.map((x) => `<li>${esc(typeof x === 'object' ? JSON.stringify(x) : x)}</li>`).join('')}</ul>`;
+    else body = `<p>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`;
+    return `<div class="dsec"><div class="dlabel mono">${esc(human(k))}</div>${body}</div>`;
+  }).join('');
+}
+
+async function renderScrum(main) {
+  if (!state.scrumSprint) state.scrumSprint = currentSprint();
+  const { year, number } = state.scrumSprint;
+  main.innerHTML = `<div class="empty"><div>Loading sprint…</div></div>`;
+  const [st, cer] = await Promise.all([
+    api('GET', `/api/sprint-status?year=${year}&number=${number}`),
+    api('GET', `/api/ceremonies?sprint_year=${year}&sprint_number=${number}`),
+  ]);
+  if (state.view !== 'scrum') return;
+  const total = st.done.length + st.in_progress.length + st.todo.length;
+  const pctDone = total ? Math.round((st.done.length / total) * 100) : 0;
+  const filt = state.scrumKind || '';
+  const items = cer.filter((c) => !filt || c.kind === filt);
+  const tick = (ok, text) => `<span class="cer ${ok ? 'ok' : ''}">${ok ? '✓' : '○'} ${text}</span>`;
+  const [dHeld, dDue] = st.ceremonies.daily_scrums.split('/').map(Number);
+
+  main.innerHTML = `<div class="scrum">
+    <section class="sprint-head">
+      <div class="sprint-nav">
+        <button class="icon-btn" data-sp="-1" aria-label="Previous sprint">‹</button>
+        <div><div class="overline mono">${fmtDate(st.start)} – ${fmtDate(st.end)} · ${st.working_days} working days</div>
+          <h2>${st.sprint}${year === currentSprint().year && number === currentSprint().number ? ' <span class="cur mono">current</span>' : ''}</h2></div>
+        <button class="icon-btn" data-sp="1" aria-label="Next sprint">›</button>
+      </div>
+      <div class="goal">${st.goal ? `<span class="dlabel mono">Sprint goal</span> ${esc(st.goal)}` : '<span class="muted">No sprint goal yet — set at sprint planning.</span>'}</div>
+      <div class="progress"><div style="width:${pctDone}%"></div></div>
+      <div class="mono prog-l">${st.done.length}/${total} tasks done · ${st.in_progress.length} in progress · ${st.todo.length} to do · ${st.completed_in_window.late} delivered late · ${st.excuses_in_window.length} excuses</div>
+      <div class="cers">
+        ${tick(st.ceremonies.sprint_planning, 'Planning')}
+        ${tick(dDue && dHeld >= dDue, `Daily scrums ${st.ceremonies.daily_scrums}`)}
+        ${tick(st.ceremonies.sprint_review, 'Review')}
+        ${tick(st.ceremonies.retrospective, 'Retro')}
+      </div>
+    </section>
+
+    <div class="kind-filter">
+      <button class="kf ${!filt ? 'on' : ''}" data-kind="">All <span class="count">${cer.length}</span></button>
+      ${Object.entries(KIND).map(([k, v]) => `<button class="kf ${filt === k ? 'on' : ''}" data-kind="${k}"><span class="kdot ${v.cls}"></span>${v.label} <span class="count">${cer.filter((c) => c.kind === k).length}</span></button>`).join('')}
+    </div>
+
+    ${items.length ? `<div class="cer-list">${items.map((c) => `
+      <article class="cer-card">
+        <div class="cer-top"><span class="kbadge ${KIND[c.kind].cls}">${KIND[c.kind].label}</span>
+          <span class="mono muted">${new Date(`${c.day}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</span></div>
+        <p class="cer-sum">${esc(c.summary)}</p>
+        <div class="dgrid">${detailsHtml(c.details)}</div>
+        ${c.task_ids.length && !Object.keys(c.details || {}).some((k) => k.endsWith('task_ids')) ? `<div class="tchips">${c.task_ids.map(taskChip).join('')}</div>` : ''}
+      </article>`).join('')}</div>`
+      : `<div class="empty"><h3>No ceremonies recorded${filt ? ' of this type' : ''} in ${st.sprint}</h3><div>They're recorded when you run them with your boss in Claude.</div></div>`}
+  </div>`;
+
+  main.querySelectorAll('[data-sp]').forEach((b) => b.addEventListener('click', () => {
+    let { year: y, number: n } = state.scrumSprint;
+    n += +b.dataset.sp;
+    if (n < 1) { y--; n = 26; } if (n > 26) { y++; n = 1; }
+    state.scrumSprint = { year: y, number: n }; render();
+  }));
+  main.querySelectorAll('[data-kind]').forEach((b) => b.addEventListener('click', () => { state.scrumKind = b.dataset.kind; render(); }));
+  main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', () => {
+    const t = state.tasks.find((x) => x.id === +el.dataset.open); if (t) openDrawer(t);
+  }));
 }
 
 // ---------- bulk action bar ----------

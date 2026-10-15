@@ -40,6 +40,11 @@ app.post('/api/work/eod', h((r) => svc.submitEod(r.body.report)));
 app.get('/api/work/scorecard', h((r) => svc.scorecard(r.query.days)));
 app.get('/api/work/excuses', h((r) => svc.excuses(r.query.days)));
 
+// Scrum ceremonies
+app.get('/api/ceremonies', h((r) => svc.listCeremonies(r.query)));
+app.post('/api/ceremonies', h((r) => svc.recordCeremony(r.body)));
+app.get('/api/sprint-status', h((r) => svc.sprintStatus(+r.query.year, +r.query.number)));
+
 // Categories
 app.get('/api/categories', h(() => svc.listCategories()));
 app.post('/api/categories', h((r) => svc.createCategory(r.body)));

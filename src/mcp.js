@@ -6,6 +6,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
 const svc = require('./service');
+const boss = require('./boss');
 
 const londonNow = () =>
   new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -39,7 +40,9 @@ const taskFields = {
 };
 
 function buildServer() {
-  const server = new McpServer({ name: 'task-mgmt', version: '1.0.0' });
+  // Standing instructions: every Claude session using this connector gets the boss persona
+  const server = new McpServer({ name: 'task-mgmt', version: '1.1.0' },
+    { instructions: `${boss.persona(svc.WORK_START, svc.WORK_END)}\n\nAt the start of a conversation call get_today. Scheduled check-ins call run_checkpoint.` });
 
   server.registerTool('get_overview', {
     title: 'Overview',
@@ -184,6 +187,57 @@ function buildServer() {
     title: 'Excuse log', description: 'Every deadline/sprint push-back with the reason given, newest first. Use it to call out repeated excuses.',
     inputSchema: { days: z.number().int().min(1).max(365).optional() }, annotations: { readOnlyHint: true },
   }, run(({ days }) => svc.excuses(days)));
+
+  // ---------- scrum ceremonies ----------
+  server.registerTool('run_checkpoint', {
+    title: 'Run boss checkpoint',
+    description: 'Used by scheduled check-ins. Returns the boss persona, the instructions for this checkpoint, and all the data needed (today, ceremonies due, sprint status, 30-day scorecard). Follow the instructions exactly.',
+    inputSchema: { name: z.enum(boss.CHECKPOINT_NAMES) },
+    annotations: { readOnlyHint: true },
+  }, run(async ({ name }) => {
+    const today = await svc.today();
+    const sc = await svc.scorecard(30); delete sc.ledger;
+    const needsSprint = ['daily_scrum', 'delivery_call', 'close_out', 'sprint_planning'].includes(name);
+    return {
+      persona: boss.persona(svc.WORK_START, svc.WORK_END),
+      checkpoint: name, instructions: boss.checkpoint(name, svc.WORK_START, svc.WORK_END),
+      skip_reason: today.workday ? null : 'Weekend: send nothing more than "Weekend. Rest."',
+      today, scorecard_30d: sc,
+      sprint_status: needsSprint ? await svc.sprintStatus() : undefined,
+    };
+  }));
+
+  server.registerTool('record_ceremony', {
+    title: 'Record scrum ceremony',
+    description: 'Store a summary of a scrum ceremony Jawad just did with you, linked to tasks. Re-recording the same ceremony updates it. ' +
+      'daily_scrum details: {yesterday, today, blockers, today_task_ids, yesterday_task_ids} — today_task_ids also become today\'s commitments. ' +
+      'sprint_planning: {goal, backlog_task_ids, capacity_notes}. sprint_review: {goal, delivered_task_ids, not_delivered_task_ids, notes}. ' +
+      'retrospective: {went_well[], to_improve[], actions[], action_task_ids}.',
+    inputSchema: {
+      kind: z.enum(['daily_scrum', 'sprint_planning', 'sprint_review', 'retrospective']),
+      summary: z.string().describe('2-4 sentence summary in plain English, written for Jawad to reread later'),
+      details: z.record(z.string(), z.any()).optional(),
+      task_ids: z.array(z.number().int()).optional().describe('Any other tasks discussed'),
+      date: z.string().optional().describe('YYYY-MM-DD; defaults to today (London)'),
+      sprint_number: z.number().int().min(1).max(26).optional().describe('Defaults to the sprint containing the date'),
+      sprint_year: z.number().int().optional(),
+    },
+  }, run((a) => svc.recordCeremony(a)));
+
+  server.registerTool('list_ceremonies', {
+    title: 'List ceremonies',
+    description: 'Past ceremony summaries (newest first), optionally filtered by kind and sprint. Use to recall what he committed to, blockers raised, and retro actions.',
+    inputSchema: { kind: z.enum(['daily_scrum', 'sprint_planning', 'sprint_review', 'retrospective']).optional(),
+      sprint_number: z.number().int().optional(), sprint_year: z.number().int().optional(), limit: z.number().int().optional() },
+    annotations: { readOnlyHint: true },
+  }, run((a) => svc.listCeremonies(a)));
+
+  server.registerTool('get_sprint_status', {
+    title: 'Sprint status',
+    description: 'For planning/review/retro: sprint dates and goal, tasks done / in progress / to do, on-time vs late completions, excuses logged, and which ceremonies were held. Defaults to the current sprint.',
+    inputSchema: { sprint_number: z.number().int().optional(), sprint_year: z.number().int().optional() },
+    annotations: { readOnlyHint: true },
+  }, run(({ sprint_number, sprint_year }) => svc.sprintStatus(sprint_year || (sprint_number && svc.sprintFor().year), sprint_number)));
 
   server.registerTool('sprint_for_date', {
     title: 'Sprint for date',

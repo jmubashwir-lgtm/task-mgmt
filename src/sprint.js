@@ -38,7 +38,18 @@ function sprintRange(year, number) {
   return { year, number, start: iso(start), end: iso(end), label: `${year}-S${String(number).padStart(2, '0')}` };
 }
 
+// Scrum ceremonies fall on working days: planning on the sprint's first weekday,
+// review + retrospective on its last weekday (sprints can start/end on weekends).
+function workingDays(year, number) {
+  const r = sprintRange(year, number), out = [];
+  for (let t = Date.parse(`${r.start}T00:00:00Z`); t <= Date.parse(`${r.end}T00:00:00Z`); t += DAY_MS) {
+    const d = new Date(t), dow = d.getUTCDay();
+    if (dow !== 0 && dow !== 6) out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
 // Works in Node (server) and the browser (served at /sprint.js) — one source of truth.
-const Sprint = { sprintFor, sprintRange, LAST_SPRINT };
+const Sprint = { sprintFor, sprintRange, workingDays, LAST_SPRINT };
 if (typeof module !== 'undefined') module.exports = Sprint;
 else window.Sprint = Sprint;

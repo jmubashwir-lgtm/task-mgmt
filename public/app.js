@@ -7,7 +7,7 @@ const STATUS = { todo: 'To do', in_progress: 'In progress', done: 'Done' };
 
 const state = {
   tasks: [], categories: [], summary: null,
-  view: pref('view', 'board'), groupBy: pref('groupBy', 'status'), zoom: +pref('zoom', 34),
+  view: pref('view', 'board'), groupBy: pref('groupBy', 'status').replace('deadline', 'due'),
   filter: { category: '', sprint: '', q: '', showDone: true },
   editing: null,      // task being edited in the drawer (null = new)
   selected: new Set(), // ids ticked for bulk edits
@@ -24,14 +24,23 @@ const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate(
 const parseYmd = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
 const dayDiff = (a, b) => { const A = parseYmd(a), B = parseYmd(b); return Math.round((Date.UTC(B.getFullYear(), B.getMonth(), B.getDate()) - Date.UTC(A.getFullYear(), A.getMonth(), A.getDate())) / 864e5); };
-const shiftIso = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString(); };
 const fmtDate = (s) => parseYmd(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-const fmtDeadline = (iso) => { const d = new Date(iso); return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
+const dueLabel = (k) => (k ? Sprint.keyLabel(k) : '—');
+const hoursIn = (list) => { const h = list.reduce((a, t) => a + (t.estimate_hours || 0), 0); return h ? `${+h.toFixed(2)}h` : ''; };
+// <option>s for a sprint picker: 4 sprints back to 16 ahead (plus the selected one if outside)
+function sprintOptions(selected, { none = false } = {}) {
+  const cur = Sprint.currentKey(), keys = [];
+  for (let i = -4; i <= 16; i++) keys.push(Sprint.addSprints(cur, i));
+  if (selected && !keys.includes(selected)) keys.push(selected), keys.sort((a, b) => a - b);
+  return (none ? `<option value="">No due sprint</option>` : '') + keys.map((k) => {
+    const r = Sprint.sprintRange(...Object.values(Sprint.fromKey(k)));
+    return `<option value="${k}" ${k === selected ? 'selected' : ''}>${r.label} · ${fmtDate(r.start)} – ${fmtDate(r.end)}${k === cur ? ' (current)' : ''}</option>`;
+  }).join('');
+}
 const fmtStamp = (iso) => new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-const toLocalInput = (iso) => { if (!iso) return ''; const d = new Date(iso); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const sprintKey = (t) => `${t.sprint_year}-${t.sprint_number}`;
 const sprintLabel = (y, n) => `${y}-S${pad(n)}`;
-const isOverdue = (t) => t.deadline && t.status !== 'done' && new Date(t.deadline) < new Date();
+const isOverdue = (t) => !!t.due_sprint && t.status !== 'done' && t.due_sprint < Sprint.currentKey();
 const today = () => ymd(new Date());
 const currentSprint = () => Sprint.sprintFor(new Date());
 
@@ -114,16 +123,15 @@ function groups(tasks) {
         };
       });
   }
-  // deadline buckets: reorder within a bucket only (dates are changed in the drawer or Gantt)
-  const t0 = today(), wk = addDays(t0, 7);
-  const dl = (t) => (t.deadline ? ymd(new Date(t.deadline)) : null);
+  // due-sprint buckets: reorder within a bucket only (due sprints change in the drawer, Gantt or bulk bar)
+  const cur = Sprint.currentKey(), nxt = Sprint.addSprints(cur, 1);
   return [
     { key: 'overdue', title: 'Overdue', color: '#FC3A5D', match: (t) => isOverdue(t) },
-    { key: 'today', title: 'Today', color: '#65BC7B', match: (t) => !isOverdue(t) && dl(t) === t0 },
-    { key: 'week', title: 'Next 7 days', match: (t) => !isOverdue(t) && dl(t) > t0 && dl(t) <= wk },
-    { key: 'later', title: 'Later', match: (t) => !isOverdue(t) && dl(t) > wk },
-    { key: 'past-done', title: 'Past (done)', match: (t) => t.deadline && !isOverdue(t) && dl(t) < t0 },
-    { key: 'none', title: 'No deadline', color: '#B0B0B4', match: (t) => !t.deadline },
+    { key: 'this', title: `Due this sprint · ${Sprint.keyLabel(cur)}`, color: '#65BC7B', match: (t) => t.due_sprint === cur },
+    { key: 'next', title: `Due next sprint · ${Sprint.keyLabel(nxt)}`, match: (t) => t.due_sprint === nxt },
+    { key: 'later', title: 'Due later', match: (t) => t.due_sprint > nxt },
+    { key: 'past-done', title: 'Earlier (done)', match: (t) => t.due_sprint && t.due_sprint < cur && t.status === 'done' },
+    { key: 'none', title: 'No due sprint', color: '#B0B0B4', match: (t) => !t.due_sprint },
   ].map((x) => ({ ...x, locked: true }))
    .filter((x) => x.key !== 'past-done' || tasks.some(x.match));
 }
@@ -136,7 +144,8 @@ function renderChrome() {
   const total = s.open_in_sprint + s.done_in_sprint;
   $('#stats').innerHTML = `
     <button class="stat ${s.overdue ? 'alert' : ''}" data-jump="overdue"><b>${s.overdue}</b> overdue</button>
-    <button class="stat" data-jump="week"><b>${s.due_this_week}</b> due in 7 days</button>
+    <button class="stat" data-jump="due"><b>${s.due_this_sprint}</b> due this sprint</button>
+    <button class="stat ${s.open_hours_in_sprint > s.sprint_capacity_hours ? 'alert' : ''}" data-jump="sprint" title="Open estimated hours in this sprint vs capacity"><b>${+s.open_hours_in_sprint.toFixed(1)}h</b> / ${s.sprint_capacity_hours}h load</button>
     <button class="stat" data-jump="sprint"><b>${s.done_in_sprint}/${total}</b> sprint done</button>`;
 
   const cat = $('#fCategory'), cv = cat.value;
@@ -154,11 +163,9 @@ function renderChrome() {
 
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   $('#groupBy').value = state.groupBy;
-  $('#zoom').value = String(state.zoom);
   $('#groupWrap').hidden = ['gantt', 'boss', 'scrum'].includes(state.view);
   document.querySelector('.filters').style.visibility = ['boss', 'scrum'].includes(state.view) ? 'hidden' : '';
   renderClock();
-  $('#zoomWrap').hidden = state.view !== 'gantt';
 }
 
 // ---------- shared card bits ----------
@@ -169,8 +176,9 @@ function catChip(t) {
 }
 function infoChips(t) {
   return [
-    t.deadline ? `<span class="chip ${isOverdue(t) ? 'overdue' : ''}">${isOverdue(t) ? 'Overdue · ' : ''}${fmtDeadline(t.deadline)}</span>` : '',
-    `<span class="chip">${sprintLabel(t.sprint_year, t.sprint_number)}</span>`,
+    t.due_sprint ? `<span class="chip ${isOverdue(t) ? 'overdue' : ''}">${isOverdue(t) ? 'Overdue · ' : 'Due '}${Sprint.keyLabel(t.due_sprint)}</span>` : '',
+    Sprint.key(t.sprint_year, t.sprint_number) !== t.due_sprint ? `<span class="chip" title="Sprint it's being worked in">In ${sprintLabel(t.sprint_year, t.sprint_number)}</span>` : '',
+    t.estimate_hours != null ? `<span class="chip est" title="Estimated work hours">${t.estimate_hours}h</span>` : '',
     t.sprint_update_count ? `<span class="chip slipped" title="Sprint changed ${t.sprint_update_count} time(s)">Slipped ×${t.sprint_update_count}</span>` : '',
     t.notes ? `<span class="chip notes" title="Has notes">notes</span>` : '',
   ].join('');
@@ -240,7 +248,7 @@ function renderBoard(main, tasks) {
     return `<section class="col">
       <div class="col-head">
         <div class="col-title">${groupSel(items)}${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
-          <span class="count">${items.length}</span></div>
+          <span class="count">${items.length}</span>${hoursIn(items.filter((t) => t.status !== 'done')) ? `<span class="hrs mono" title="Open estimated hours">${hoursIn(items.filter((t) => t.status !== 'done'))}</span>` : ''}</div>
         ${g.locked ? '' : `<button class="col-add" data-add="${g.key}" title="Add task here">+</button>`}
       </div>
       ${g.sub ? `<div class="col-sub" style="margin:-8px 4px 10px">${g.sub}</div>` : ''}
@@ -258,12 +266,12 @@ function renderBoard(main, tasks) {
 
 function renderList(main, tasks) {
   const gs = groups(tasks);
-  main.innerHTML = `<div class="row-head"><span></span><span>Task</span><span class="hide-m">Category</span><span class="hide-m">Status</span><span>Deadline</span><span class="hide-m">Sprint</span><span class="hide-m">Updated</span></div>` +
+  main.innerHTML = `<div class="row-head"><span></span><span>Task</span><span class="hide-m">Category</span><span class="hide-m">Status</span><span>Due</span><span class="hide-m">Sprint</span><span class="hide-m">Est.</span><span class="hide-m">Updated</span></div>` +
     gs.map((g) => {
       const items = tasks.filter(g.match);
       return `<section class="group">
         <div class="group-head">${groupSel(items)}${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
-          <span class="count">${items.length}</span>${g.sub ? `<span class="col-sub">${g.sub}</span>` : ''}
+          <span class="count">${items.length}</span>${hoursIn(items.filter((t) => t.status !== 'done')) ? `<span class="hrs mono">${hoursIn(items.filter((t) => t.status !== 'done'))}</span>` : ''}${g.sub ? `<span class="col-sub">${g.sub}</span>` : ''}
           ${g.locked ? '' : `<button class="col-add" data-add="${g.key}" title="Add task here">+</button>`}</div>
         <div class="list drop" data-key="${g.key}">${items.map((t) => `
           <div class="row ${t.status === 'done' ? 'done' : ''} ${state.selected.has(t.id) ? 'selected' : ''}" data-id="${t.id}">
@@ -271,8 +279,9 @@ function renderList(main, tasks) {
             <span class="name">${esc(t.name)}</span>
             <span class="cell hide-m">${catChip(t) || '—'}</span>
             <span class="cell hide-m"><span class="status-tag ${t.status}">${STATUS[t.status]}</span></span>
-            <span class="cell" style="${isOverdue(t) ? 'color:var(--red)' : ''}">${t.deadline ? fmtDeadline(t.deadline) : '—'}</span>
+            <span class="cell" style="${isOverdue(t) ? 'color:var(--red)' : ''}">${dueLabel(t.due_sprint)}</span>
             <span class="cell hide-m">${sprintLabel(t.sprint_year, t.sprint_number)}${t.sprint_update_count ? ` <span class="chip slipped">×${t.sprint_update_count}</span>` : ''}</span>
+            <span class="cell hide-m">${t.estimate_hours != null ? `${t.estimate_hours}h` : '—'}</span>
             <span class="cell hide-m">${new Date(t.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
           </div>`).join('') || ''}</div>
       </section>`;
@@ -312,97 +321,85 @@ function wireDrag(main, gs, itemSel) {
   main.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => openDrawer(null, { ...byKey[b.dataset.add].patch })));
 }
 
-// ---------- Gantt ----------
-// A bar runs from start_date to the deadline's date. Drag the bar to shift both,
-// drag the left/right edge to change start/deadline. A tap opens the task.
+// ---------- Gantt (sprint columns) ----------
+// A bar runs from the start sprint to the due sprint. Drag the bar to move both,
+// drag the left/right edge to change start/due by whole sprints. A tap opens the task.
 function renderGantt(main, tasks) {
-  const dw = state.zoom;
-  const rows = [...tasks].sort((a, b) => a.start_date.localeCompare(b.start_date) || a.position - b.position);
-  const endOf = (t) => (t.deadline ? ymd(new Date(t.deadline)) : t.start_date);
-  const cur = Sprint.sprintRange(...Object.values(currentSprint()));
-  let from = [cur.start, ...rows.map((t) => t.start_date)].sort()[0];
-  let to = [addDays(today(), 21), ...rows.map(endOf)].sort().pop();
-  from = addDays(from, -3); to = addDays(to, 5);
-  const days = dayDiff(from, to) + 1;
-  const W = days * dw;
-  const x = (s) => dayDiff(from, s) * dw;
+  const SW = window.innerWidth <= 760 ? 92 : 130;           // width of one sprint column
+  const cur = Sprint.currentKey();
+  const startOf = (t) => t.start_sprint || Sprint.key(t.sprint_year, t.sprint_number);
+  const dueOf = (t) => Math.max(t.due_sprint || startOf(t), startOf(t));
+  const rows = [...tasks].sort((a, b) => startOf(a) - startOf(b) || dueOf(a) - dueOf(b) || a.position - b.position);
+  let from = Math.min(Sprint.addSprints(cur, -1), ...rows.map(startOf));
+  let to = Math.max(Sprint.addSprints(cur, 4), ...rows.map(dueOf));
+  const cols = []; for (let k = from; k <= to; k = Sprint.addSprints(k, 1)) cols.push(k);
+  const idx = (k) => cols.indexOf(k);
+  const W = cols.length * SW;
 
-  // header: sprint row + day row; background: sprint bands, weekends, today line
-  let sprints = '', dayCells = '', bg = '';
-  let segStart = 0, segSprint = Sprint.sprintFor(from);
-  for (let i = 0; i <= days; i++) {
-    const d = addDays(from, i);
-    const sp = i < days ? Sprint.sprintFor(d) : null;
-    if (!sp || sp.number !== segSprint.number || sp.year !== segSprint.year) {
-      const w = (i - segStart) * dw;
-      sprints += `<div class="g-sprint" style="left:${segStart * dw}px;width:${w}px">${sprintLabel(segSprint.year, segSprint.number)}</div>`;
-      if (segSprint.number % 2 === 0) bg += `<div class="g-band" style="left:${segStart * dw}px;width:${w}px"></div>`;
-      segStart = i; segSprint = sp;
-    }
-    if (i === days) break;
-    const dt = parseYmd(d), wd = dt.getDay(), wkend = wd === 0 || wd === 6;
-    if (wkend) bg += `<div class="g-wkend" style="left:${i * dw}px;width:${dw}px"></div>`;
-    let label = '';
-    if (dw >= 30) label = `${dt.getDate() === 1 ? dt.toLocaleDateString('en-GB', { month: 'short' }) : 'SMTWTFS'[wd]}<br>${dt.getDate()}`;
-    else if (wd === 1) label = `${dt.getDate()}<br>${dt.toLocaleDateString('en-GB', { month: 'short' })}`;
-    if (label || dw >= 30) dayCells += `<div class="g-day ${wkend ? 'wkend' : ''} ${d === today() ? 'today' : ''}" style="left:${i * dw}px;width:${dw >= 30 ? dw : dw * 7}px">${label}</div>`;
-  }
-  bg += `<div class="g-todayline" style="left:${x(today()) + dw / 2}px"></div>`;
+  // today's position inside the current sprint
+  const r = Sprint.sprintRange(...Object.values(Sprint.fromKey(cur)));
+  const span = dayDiff(r.start, r.end) + 1, into = dayDiff(r.start, today()) + 0.5;
+  const todayX = idx(cur) * SW + (into / span) * SW;
+
+  const head = cols.map((k, i) => {
+    const rr = Sprint.sprintRange(...Object.values(Sprint.fromKey(k)));
+    return `<div class="g-sp ${k === cur ? 'g-cur' : ''}" style="left:${i * SW}px;width:${SW}px">
+      <b>${rr.label.slice(5)}</b> <span>${fmtDate(rr.start)}–${fmtDate(rr.end)}</span>
+      <em>${hoursIn(rows.filter((t) => t.sprint_year * 100 + t.sprint_number === k && t.status !== 'done'))}</em></div>`;
+  }).join('');
+  const bg = cols.map((k, i) => `<div class="g-band ${k === cur ? 'g-cur' : ''}" style="left:${i * SW}px;width:${SW}px"></div>`).join('')
+    + `<div class="g-todayline" style="left:${todayX}px"></div>`;
 
   main.innerHTML = `<div class="gantt"><div class="g-grid" style="width:calc(var(--lw) + ${W}px)">
-    <div class="g-head"><div class="g-corner">Task</div><div class="g-scale" style="width:${W}px">${sprints}${dayCells}</div></div>
+    <div class="g-head"><div class="g-corner">Task</div><div class="g-scale" style="width:${W}px">${head}</div></div>
     <div style="position:relative">
       <div style="position:absolute;top:0;bottom:0;left:var(--lw);width:${W}px">${bg}</div>
       ${rows.map((t) => {
-        const s = t.start_date, e = endOf(t) < s ? s : endOf(t);
+        const s0 = idx(startOf(t)), e0 = idx(dueOf(t));
         const col = t.category_color || '#0C0C0D';
         const dark = ['#7BFDFD', '#FCED67', '#7CFE86'].includes((col || '').toUpperCase());
         return `<div class="g-row">
-          <div class="g-label ${state.selected.has(t.id) ? 'selected' : ''}" data-open="${t.id}">${selBox(t.id)}${t.category_color ? `<span class="dot" style="background:${t.category_color}"></span>` : ''}<span>${esc(t.name)}</span></div>
+          <div class="g-label ${state.selected.has(t.id) ? 'selected' : ''}" data-open="${t.id}">${selBox(t.id)}${t.category_color ? `<span class="dot" style="background:${t.category_color}"></span>` : ''}<span>${esc(t.name)}</span>${t.estimate_hours != null ? `<em class="mono">${t.estimate_hours}h</em>` : ''}</div>
           <div class="g-track" style="width:${W}px">
-            <div class="g-bar ${t.deadline ? '' : 'nodeadline'} ${t.status === 'done' ? 'done' : ''} ${isOverdue(t) ? 'overdue' : ''}"
-                 data-id="${t.id}" style="left:${x(s)}px;width:${(dayDiff(s, e) + 1) * dw}px;background:${col};${dark ? 'color:#0C0C0D' : ''}"
-                 title="${esc(t.name)}">
-              <span class="g-handle l"></span>${dw >= 30 || dayDiff(s, e) > 3 ? esc(t.name) : ''}<span class="g-handle r"></span>
+            <div class="g-bar ${t.due_sprint ? '' : 'nodeadline'} ${t.status === 'done' ? 'done' : ''} ${isOverdue(t) ? 'overdue' : ''}"
+                 data-id="${t.id}" style="left:${s0 * SW + 4}px;width:${(e0 - s0 + 1) * SW - 8}px;background:${col};${dark ? 'color:#0C0C0D' : ''}"
+                 title="${esc(t.name)} · ${Sprint.keyLabel(startOf(t))} → ${t.due_sprint ? Sprint.keyLabel(t.due_sprint) : 'no due sprint'}">
+              <span class="g-handle l"></span>${esc(t.name)}<span class="g-handle r"></span>
             </div>
           </div></div>`;
       }).join('')}
     </div></div></div>`;
-  $('.gantt').style.setProperty('--lw', window.innerWidth <= 760 ? '140px' : '240px');
-
-  // scroll so "today" is near the left edge
-  $('.gantt').scrollLeft = Math.max(0, x(today()) - 3 * dw);
+  $('.gantt').style.setProperty('--lw', window.innerWidth <= 760 ? '140px' : '260px');
+  $('.gantt').scrollLeft = Math.max(0, (idx(cur) - 1) * SW);
 
   main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', (e) => onItemClick(e, +el.dataset.open)));
-  main.querySelectorAll('.g-bar').forEach((bar) => wireBar(bar, dw));
+  main.querySelectorAll('.g-bar').forEach((bar) => wireBar(bar, SW, startOf, dueOf));
 }
 
-function wireBar(bar, dw) {
+function wireBar(bar, SW, startOf, dueOf) {
   bar.addEventListener('pointerdown', (e) => {
     const t = state.tasks.find((k) => k.id === +bar.dataset.id);
     const mode = e.target.classList.contains('l') ? 'start' : e.target.classList.contains('r') ? 'end' : 'move';
     const x0 = e.clientX, left0 = bar.offsetLeft, w0 = bar.offsetWidth;
-    let shift = 0, moved = false;
+    const s0 = startOf(t), d0 = dueOf(t);
+    let n = 0, moved = false;
     const tip = document.createElement('div'); tip.className = 'g-tip';
     bar.setPointerCapture(e.pointerId);
-
-    const endDate = t.deadline ? ymd(new Date(t.deadline)) : t.start_date;
-    const limits = { start: dayDiff(t.start_date, endDate), end: -dayDiff(t.start_date, endDate) };
+    let span = 0; for (let k = s0; k < d0; k = Sprint.addSprints(k, 1)) span++;   // sprints between start and due
 
     const onMove = (ev) => {
       const dx = ev.clientX - x0;
       if (Math.abs(dx) > 4) moved = true;
       if (!moved) return;
-      shift = Math.round(dx / dw);
-      if (mode === 'start') shift = Math.min(shift, limits.start);
-      if (mode === 'end') shift = Math.max(shift, limits.end);
+      n = Math.round(dx / SW);
+      if (mode === 'start') n = Math.min(n, span);
+      if (mode === 'end') n = Math.max(n, -span);
       bar.classList.add('dragging');
-      if (mode === 'move') bar.style.left = `${left0 + shift * dw}px`;
-      if (mode === 'start') { bar.style.left = `${left0 + shift * dw}px`; bar.style.width = `${w0 - shift * dw}px`; }
-      if (mode === 'end') bar.style.width = `${w0 + shift * dw}px`;
-      const s = mode === 'end' ? t.start_date : addDays(t.start_date, shift);
-      const en = mode === 'start' ? endDate : addDays(endDate, shift);
-      tip.textContent = `${fmtDate(s)} → ${fmtDate(en)}`;
+      if (mode === 'move') bar.style.left = `${left0 + n * SW}px`;
+      if (mode === 'start') { bar.style.left = `${left0 + n * SW}px`; bar.style.width = `${w0 - n * SW}px`; }
+      if (mode === 'end') bar.style.width = `${w0 + n * SW}px`;
+      const ns = mode === 'end' ? s0 : Sprint.addSprints(s0, n), nd = mode === 'start' ? d0 : Sprint.addSprints(d0, n);
+      tip.textContent = `${Sprint.keyLabel(ns)} → ${Sprint.keyLabel(nd)}`;
       if (!tip.isConnected) document.body.append(tip);
       tip.style.left = ev.clientX + 12 + 'px'; tip.style.top = ev.clientY - 30 + 'px';
     };
@@ -411,13 +408,10 @@ function wireBar(bar, dw) {
       bar.removeEventListener('pointerup', onUp);
       tip.remove();
       if (!moved) return openDrawer(t);
-      if (!shift) return render();
+      if (!n) return render();
       const patch = {};
-      if (mode !== 'end') patch.start_date = addDays(t.start_date, shift);
-      if (mode !== 'start') {
-        patch.deadline = t.deadline ? shiftIso(t.deadline, shift)
-          : new Date(`${addDays(t.start_date, shift)}T17:00`).toISOString(); // no deadline yet → 5pm
-      }
+      if (mode !== 'end') patch.start_sprint = Sprint.addSprints(s0, n);
+      if (mode !== 'start') patch.due_sprint = Sprint.addSprints(d0, n);
       patchTask(t.id, patch);
     };
     bar.addEventListener('pointermove', onMove);
@@ -458,8 +452,10 @@ function openDrawer(task, draft = {}) {
   f.name.value = t.name || '';
   f.category.value = catName;
   setStatus(t.status || draft.status || 'todo');
-  f.start_date.value = t.start_date || today();
-  f.deadline.value = toLocalInput(t.deadline);
+  const planned = Sprint.key(t.sprint_year || draft.sprint_year || cur.year, t.sprint_number || draft.sprint_number || cur.number);
+  f.start_sprint.innerHTML = sprintOptions(task ? t.start_sprint : planned);
+  f.due_sprint.innerHTML = sprintOptions(task ? t.due_sprint : (draft.due_sprint || planned), { none: true });
+  f.estimate_hours.value = t.estimate_hours ?? '';
   fillSprintSelects(t.sprint_year || draft.sprint_year || cur.year, t.sprint_number || draft.sprint_number || cur.number);
   f.notes.value = t.notes || '';
   $('#deleteBtn').hidden = !task;
@@ -469,10 +465,10 @@ function openDrawer(task, draft = {}) {
     <dt>Sprint moved</dt><dd>${task.sprint_update_count} time${task.sprint_update_count === 1 ? '' : 's'}</dd>
     <dt>Calendar</dt><dd>${task.calendar_event_id ? 'Time blocked' : '—'}</dd>` : '';
   $('#meta').hidden = !task;
-  // New task: picking a deadline moves the sprint to match it
-  f.deadline.oninput = () => {
-    if (state.editing || !f.deadline.value) return;
-    const s = Sprint.sprintFor(new Date(f.deadline.value));
+  // New task: picking a due sprint plans the task into that sprint too
+  f.due_sprint.onchange = () => {
+    if (state.editing || !f.due_sprint.value) return;
+    const s = Sprint.fromKey(+f.due_sprint.value);
     fillSprintSelects(s.year, s.number);
   };
   $('#drawer').classList.add('open'); $('#drawer').setAttribute('aria-hidden', 'false');
@@ -491,8 +487,9 @@ async function saveDrawer(e) {
   const body = {
     name: f.name.value.trim(),
     status: $('#statusSeg').dataset.value,
-    start_date: f.start_date.value || today(),
-    deadline: f.deadline.value ? new Date(f.deadline.value).toISOString() : null,
+    start_sprint: +f.start_sprint.value,
+    due_sprint: f.due_sprint.value ? +f.due_sprint.value : null,
+    estimate_hours: f.estimate_hours.value === '' ? null : +f.estimate_hours.value,
     sprint_year: +f.sprint_year.value,
     sprint_number: +f.sprint_number.value,
     notes: f.notes.value.trim() || null,
@@ -513,7 +510,6 @@ function wire() {
     state.view = b.dataset.view; savePref('view', state.view); renderChrome(); render();
   }));
   $('#groupBy').addEventListener('change', (e) => { state.groupBy = e.target.value; savePref('groupBy', state.groupBy); render(); });
-  $('#zoom').addEventListener('change', (e) => { state.zoom = +e.target.value; savePref('zoom', state.zoom); render(); });
   $('#fCategory').addEventListener('change', (e) => { state.filter.category = e.target.value; render(); });
   $('#fSprint').addEventListener('change', (e) => { state.filter.sprint = e.target.value; render(); });
   $('#fSearch').addEventListener('input', (e) => { state.filter.q = e.target.value; render(); });
@@ -531,7 +527,7 @@ function wire() {
   $('#stats').addEventListener('click', (e) => {
     const b = e.target.closest('[data-jump]'); if (!b) return;
     if (b.dataset.jump === 'sprint') { const c = currentSprint(); state.filter.sprint = `${c.year}-${c.number}`; $('#fSprint').value = state.filter.sprint; state.groupBy = 'status'; }
-    else state.groupBy = 'deadline';
+    else state.groupBy = 'due';
     if (state.view === 'gantt') state.view = 'list';
     renderChrome(); render();
   });
@@ -589,7 +585,7 @@ async function clockAction() {
 
 const pct = (v) => (v == null ? '—' : `${v}%`);
 const tile = (label, value, sub = '', tone = '') => `<div class="tile ${tone}"><div class="tile-v">${value}</div><div class="tile-l">${label}</div>${sub ? `<div class="tile-s">${sub}</div>` : ''}</div>`;
-const taskLine = (t) => `<li class="tl ${t.status === 'done' ? 'done' : ''}" data-open="${t.id}"><span class="status-tag ${t.status || ''}">${STATUS[t.status] || 'Overdue'}</span><span>${esc(t.name)}</span>${t.deadline ? `<span class="mono muted">${fmtDeadline(t.deadline)}</span>` : ''}</li>`;
+const taskLine = (t) => `<li class="tl ${t.status === 'done' ? 'done' : ''}" data-open="${t.id}"><span class="status-tag ${t.status || ''}">${STATUS[t.status] || 'Overdue'}</span><span>${esc(t.name)}</span><span class="mono muted">${t.estimate_hours != null ? `${t.estimate_hours}h · ` : ''}${t.due_sprint ? `due ${t.due_sprint}` : ''}</span></li>`;
 
 async function renderBoss(main) {
   main.innerHTML = `<div class="empty"><div>Loading your record…</div></div>`;
@@ -603,7 +599,7 @@ async function renderBoss(main) {
   const commits = t.commitments.length
     ? `<ul class="tlist">${t.commitments.map(taskLine).join('')}</ul>`
     : `<p class="muted">No commitments yet. They're set at the daily scrum — or tick tasks on the Board or List and press <b>Commit today</b>.</p>`;
-  const dueAndOverdue = [...t.overdue.map((x) => ({ ...x, status: null })), ...t.due_today.filter((x) => !t.overdue.some((o) => o.id === x.id))];
+  const dueAndOverdue = [...t.overdue.map((x) => ({ ...x, status: null })), ...t.due_this_sprint.filter((x) => x.status !== 'done')];
 
   main.innerHTML = `<div class="boss">
     <section class="boss-hero ${t.late && t.workday && !t.clock_out ? 'late' : ''}">
@@ -628,15 +624,15 @@ async function renderBoss(main) {
     </div>
 
     <div class="boss-grid">
-      <section class="panel"><h3>Today's commitments</h3>${commits}</section>
-      <section class="panel"><h3>Due today & overdue</h3>${dueAndOverdue.length ? `<ul class="tlist">${dueAndOverdue.map(taskLine).join('')}</ul>` : '<p class="muted">Nothing due. Get ahead.</p>'}</section>
+      <section class="panel"><h3>Today's commitments ${t.commitments_estimate_hours ? `<span class="hrs mono">${t.commitments_estimate_hours}h</span>` : ''}</h3>${commits}</section>
+      <section class="panel"><h3>Overdue & due this sprint</h3>${dueAndOverdue.length ? `<ul class="tlist">${dueAndOverdue.map(taskLine).join('')}</ul>` : '<p class="muted">Nothing due. Get ahead.</p>'}</section>
       <section class="panel"><h3>End-of-day report</h3>
         ${t.eod_report ? `<p class="eod-filed">${esc(t.eod_report)}</p>` :
           `<textarea id="eodText" rows="5" placeholder="What shipped today? What didn't, and why? What's first tomorrow?"></textarea>
            <button class="btn primary" id="eodSubmit">File report</button>`}
       </section>
       <section class="panel"><h3>Excuse log <span class="count">${ex.length}</span></h3>
-        ${ex.length ? `<ul class="xlist">${ex.slice(0, 12).map((e) => `<li><div><b>${esc(e.task_name)}</b> <span class="mono muted">${e.kind === 'sprint_moved' ? `${e.old_value} → ${e.new_value}` : 'deadline pushed'}</span></div>
+        ${ex.length ? `<ul class="xlist">${ex.slice(0, 12).map((e) => `<li><div><b>${esc(e.task_name)}</b> <span class="mono muted">${e.kind === 'sprint_moved' ? 'sprint' : 'due'} ${esc(e.old_value || '')} → ${esc(e.new_value || '')}</span></div>
           <div class="reason">“${esc(e.reason)}”</div><div class="mono muted">${fmtStamp(e.created_at)}</div></li>`).join('')}</ul>` : '<p class="muted">Clean. Keep it that way.</p>'}
       </section>
       <section class="panel wide"><h3>Last working days</h3>
@@ -703,6 +699,7 @@ async function renderScrum(main) {
       <div class="goal">${st.goal ? `<span class="dlabel mono">Sprint goal</span> ${esc(st.goal)}` : '<span class="muted">No sprint goal yet — set at sprint planning.</span>'}</div>
       <div class="progress"><div style="width:${pctDone}%"></div></div>
       <div class="mono prog-l">${st.done.length}/${total} tasks done · ${st.in_progress.length} in progress · ${st.todo.length} to do · ${st.completed_in_window.late} delivered late · ${st.excuses_in_window.length} excuses</div>
+      <div class="mono prog-l ${st.hours.estimated_open > st.hours.capacity ? 'over' : ''}">Load: ${+st.hours.estimated_open.toFixed(1)}h open of ${+st.hours.estimated_total.toFixed(1)}h estimated · capacity ${st.hours.capacity}h (${st.hours.capacity_note})${st.hours.unestimated_tasks ? ` · ${st.hours.unestimated_tasks} task${st.hours.unestimated_tasks === 1 ? '' : 's'} without an estimate` : ''}</div>
       <div class="cers">
         ${tick(st.ceremonies.sprint_planning, 'Planning')}
         ${tick(dDue && dHeld >= dDue, `Daily scrums ${st.ceremonies.daily_scrums}`)}
@@ -757,6 +754,7 @@ function renderBulk() {
     }
     sel.innerHTML = `<option value="">Sprint…</option><option value="next">→ Next sprint (each)</option>` + opts.join('');
     sel.dataset.filled = '1';
+    $('#bDue').innerHTML = `<option value="">Due…</option>` + sprintOptions(null) + `<option value="none">No due sprint</option>`;
   }
 }
 
@@ -787,14 +785,21 @@ function wireBulk() {
     const [y, n] = v.split('-').map(Number);
     bulk({ sprint_year: y, sprint_number: n }, `Sprint → ${sprintLabel(y, n)}`);
   });
-  $('#bDeadline').addEventListener('change', (e) => {
+  $('#bDue').addEventListener('change', (e) => {
     const v = e.target.value; e.target.value = '';
-    if (v) bulk({ deadline: v }, `Deadline → ${fmtDate(v)} 17:00`);   // date only = 5pm London
+    if (v === 'none') return bulk({ due_sprint: null }, 'Due sprint cleared');
+    if (v) bulk({ due_sprint: +v }, `Due → ${Sprint.keyLabel(+v)}`);
   });
   document.querySelectorAll('[data-shift]').forEach((b) => b.addEventListener('click', () => {
-    const d = +b.dataset.shift;
-    bulk({ deadline_shift_days: d }, `Deadlines ${d > 0 ? '+' : ''}${d}d`);
+    const n = +b.dataset.shift;
+    bulk({ due_shift_sprints: n }, `Due sprints ${n > 0 ? '+' : ''}${n}`);
   }));
+  $('#bEstimate').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const v = e.target.value; e.target.value = '';
+    bulk({ estimate_hours: v === '' ? null : +v }, v === '' ? 'Estimates cleared' : `Estimate → ${v}h each`);
+  });
   $('#bDelete').addEventListener('click', async () => {
     const n = state.selected.size;
     if (!confirm(`Delete ${n} task${n === 1 ? '' : 's'}? This can't be undone.`)) return;

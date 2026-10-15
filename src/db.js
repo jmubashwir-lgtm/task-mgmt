@@ -3,6 +3,8 @@ const { Pool, types } = require('pg');
 
 // Return DATE columns as plain 'YYYY-MM-DD' text (no timezone shifting)
 types.setTypeParser(1082, (v) => v);
+// NUMERIC (estimate hours) as a JS number, not text
+types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)));
 const fs = require('fs');
 const path = require('path');
 

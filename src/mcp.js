@@ -7,6 +7,7 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { z } = require('zod');
 const svc = require('./service');
 const boss = require('./boss');
+const { keyLabel, currentKey } = require('./sprint');
 
 const londonNow = () =>
   new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -14,9 +15,10 @@ const londonNow = () =>
 // Shape each task the way Claude finds easiest to read.
 const brief = (t) => ({
   id: t.id, name: t.name, category: t.category_name, status: t.status,
-  start_date: t.start_date,
-  deadline: t.deadline ? new Date(t.deadline).toLocaleString('en-GB', { timeZone: 'Europe/London', dateStyle: 'medium', timeStyle: 'short' }) + ' (London)' : null,
-  deadline_iso: t.deadline,
+  start_sprint: keyLabel(t.start_sprint),
+  due_sprint: keyLabel(t.due_sprint),
+  overdue: !!(t.due_sprint && t.due_sprint < currentKey() && t.status !== 'done'),
+  estimate_hours: t.estimate_hours,
   sprint: `${t.sprint_year}-S${String(t.sprint_number).padStart(2, '0')}`,
   sprint_moved_count: t.sprint_update_count,
   notes: t.notes, calendar_event_id: t.calendar_event_id,
@@ -28,13 +30,15 @@ const fail = (e) => ({ isError: true, content: [{ type: 'text', text: `Error: ${
 const run = (fn) => async (args) => { try { return ok(await fn(args)); } catch (e) { return fail(e); } };
 
 // Fields shared by create and update
-const deadlineDesc = 'Deadline. Either "YYYY-MM-DD HH:mm" (London time) or a full ISO timestamp. null clears it.';
+const sprintRef = z.union([z.string(), z.number().int()]);
+const dueDesc = 'Deadline as a sprint: "2026-S22", "S22" or 22 (current year). null clears it. Pushing it later needs a reason.';
 const taskFields = {
   category: z.string().optional().describe('Category name. A new name creates the category.'),
   status: z.enum(['todo', 'in_progress', 'done']).optional(),
   notes: z.string().nullable().optional(),
-  start_date: z.string().optional().describe('YYYY-MM-DD. Left edge of the Gantt bar. Defaults to today.'),
-  deadline: z.string().nullable().optional().describe(deadlineDesc),
+  start_sprint: sprintRef.optional().describe('Sprint the work starts, e.g. "2026-S21". Defaults to the task\'s sprint.'),
+  due_sprint: sprintRef.nullable().optional().describe(dueDesc),
+  estimate_hours: z.number().min(0).nullable().optional().describe('Jawad\'s estimate of work hours to deliver it. Only set what he says.'),
   sprint_number: z.number().int().min(1).max(26).optional().describe('1-26. Sprints are 14-day blocks from 1 Jan.'),
   sprint_year: z.number().int().optional(),
 };
@@ -59,13 +63,14 @@ function buildServer() {
       category: z.string().optional().describe('Category name'),
       sprint_number: z.number().int().optional(),
       sprint_year: z.number().int().optional(),
-      overdue_only: z.boolean().optional(),
+      overdue_only: z.boolean().optional().describe('Tasks whose due sprint has passed'),
+      due_sprint: sprintRef.optional().describe('Only tasks due in this sprint'),
       search: z.string().optional().describe('Text to find in task names'),
       include_done: z.boolean().optional(),
     },
     annotations: { readOnlyHint: true },
   }, run(async (a) => {
-    const f = { status: a.status, sprint_number: a.sprint_number, sprint_year: a.sprint_year, overdue: a.overdue_only, q: a.search };
+    const f = { status: a.status, sprint_number: a.sprint_number, sprint_year: a.sprint_year, overdue: a.overdue_only, q: a.search, due_sprint: a.due_sprint };
     if (a.category) {
       const c = (await svc.listCategories()).find((x) => x.name.toLowerCase() === a.category.toLowerCase());
       if (!c) return [];
@@ -85,7 +90,7 @@ function buildServer() {
 
   server.registerTool('create_task', {
     title: 'Create task',
-    description: 'Create a task. If no sprint is given, it goes in the sprint containing the deadline (or the current sprint).',
+    description: 'Create a task. Dates are sprints, never exact days. Defaults: sprint = current (or the due sprint if given); start and due = that sprint. Ask Jawad for an estimate in hours.',
     inputSchema: { name: z.string(), ...taskFields },
   }, run(async (a) => brief(await svc.createTask({ ...a }))));
 
@@ -130,7 +135,7 @@ function buildServer() {
   server.registerTool('bulk_update_tasks', {
     title: 'Bulk update tasks',
     description: 'Apply the same change to several tasks at once (use list_tasks first to get ids). ' +
-      'Use move_to_next_sprint to push each task one sprint forward, or shift_deadline_days to move each deadline by N days.',
+      'Use move_to_next_sprint to push each task one sprint forward, or shift_due_sprints to move each due sprint by N sprints.',
     inputSchema: {
       ids: z.array(z.number().int()).min(1),
       status: z.enum(['todo', 'in_progress', 'done']).optional(),
@@ -138,12 +143,13 @@ function buildServer() {
       sprint_number: z.number().int().min(1).max(26).optional(),
       sprint_year: z.number().int().optional(),
       move_to_next_sprint: z.boolean().optional(),
-      deadline: z.string().nullable().optional().describe(deadlineDesc),
-      shift_deadline_days: z.number().int().optional(),
+      due_sprint: sprintRef.nullable().optional().describe(dueDesc),
+      shift_due_sprints: z.number().int().optional().describe('Move each task\'s due sprint by N sprints (positive = later, needs reason)'),
+      estimate_hours: z.number().min(0).nullable().optional(),
   reason: z.string().optional().describe('Required when pushing a deadline later or moving to a later sprint. Get it from Jawad — never invent one.'),
     },
-  }, run(async ({ ids, move_to_next_sprint, shift_deadline_days, ...a }) =>
-    svc.bulkUpdate(ids, { ...a, sprint_next: move_to_next_sprint, deadline_shift_days: shift_deadline_days })));
+  }, run(async ({ ids, move_to_next_sprint, shift_due_sprints, ...a }) =>
+    svc.bulkUpdate(ids, { ...a, sprint_next: move_to_next_sprint, due_shift_sprints: shift_due_sprints })));
 
   server.registerTool('bulk_delete_tasks', {
     title: 'Bulk delete tasks',
@@ -155,7 +161,7 @@ function buildServer() {
   // ---------- boss: work record ----------
   server.registerTool('get_today', {
     title: 'Today (work record)',
-    description: 'Jawad\'s work record for today: clock-in/out times, whether he is late, his committed tasks and their status, tasks due today, overdue tasks, and whether the end-of-day report is filed. Use at every check-in.',
+    description: 'Jawad\'s work record for today: clock-in/out times, whether he is late, his committed tasks (with estimates) and their status, tasks due this sprint, overdue tasks (due sprint passed), ceremonies due. Use at every check-in.',
     inputSchema: {}, annotations: { readOnlyHint: true },
   }, run(() => svc.today()));
 
@@ -241,7 +247,7 @@ function buildServer() {
 
   server.registerTool('get_sprint_status', {
     title: 'Sprint status',
-    description: 'For planning/review/retro: sprint dates and goal, tasks done / in progress / to do, on-time vs late completions, excuses logged, and which ceremonies were held. Defaults to the current sprint.',
+    description: 'For planning/review/retro: sprint dates and goal, tasks done / in progress / to do with estimates, estimated hours vs capacity, tasks due here but planned elsewhere, on-time vs late completions, excuses, and ceremonies held. Defaults to the current sprint.',
     inputSchema: { sprint_number: z.number().int().optional(), sprint_year: z.number().int().optional() },
     annotations: { readOnlyHint: true },
   }, run(({ sprint_number, sprint_year }) => svc.sprintStatus(sprint_year || (sprint_number && svc.sprintFor().year), sprint_number)));

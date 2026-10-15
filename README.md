@@ -1,6 +1,6 @@
 # Task Manager
 
-Personal task manager with Board / List-by / Gantt views and drag & drop, styled to the Polygon Technology brand guideline. Claude manages tasks through the MCP endpoint at `/mcp` and books time on Google Calendar.
+Personal task manager planned in 2-week sprints (start/due sprint, hour estimates) with Board / List-by / Gantt / Scrum / Boss views and drag & drop, styled to the Polygon Technology brand guideline. Claude manages tasks through the MCP endpoint at `/mcp` and books time on Google Calendar.
 
 ## Structure
 ```

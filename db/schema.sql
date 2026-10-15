@@ -31,6 +31,20 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS tasks_sprint_idx   ON tasks (sprint_year, sprint_number);
 CREATE INDEX IF NOT EXISTS tasks_deadline_idx ON tasks (deadline);
 
+-- 2b. Sprint-based planning (replaces exact dates; start_date/deadline are kept only as legacy data)
+--     A sprint is stored as one comparable number: year*100 + sprint, e.g. 2026-S22 = 202622.
+CREATE OR REPLACE FUNCTION sprint_key(d DATE) RETURNS INT IMMUTABLE LANGUAGE sql AS $$
+  SELECT extract(year FROM d)::int * 100 + least((extract(doy FROM d)::int - 1) / 14 + 1, 26)
+$$;
+CREATE OR REPLACE FUNCTION current_sprint_key() RETURNS INT STABLE LANGUAGE sql AS $$
+  SELECT sprint_key((now() AT TIME ZONE 'Europe/London')::date)
+$$;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_sprint   INT;            -- e.g. 202621
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_sprint     INT;            -- deadline, as a sprint
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS estimate_hours NUMERIC(6,2) CHECK (estimate_hours >= 0);
+ALTER TABLE tasks ALTER COLUMN start_date DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS tasks_due_sprint_idx ON tasks (due_sprint);
+
 -- 3. Trigger: keeps "last updated" and "sprint updated count" correct
 --    no matter who edits the task (web UI, Claude, or SQL).
 CREATE OR REPLACE FUNCTION tasks_before_update() RETURNS trigger AS $$
@@ -88,16 +102,19 @@ CREATE INDEX IF NOT EXISTS task_events_created_idx ON task_events (created_at);
 CREATE OR REPLACE FUNCTION tasks_audit() RETURNS trigger AS $$
 DECLARE
   why        TEXT := NULLIF(current_setting('app.reason', true), '');
-  dl_slip    BOOLEAN := OLD.deadline IS NOT NULL AND (NEW.deadline IS NULL OR NEW.deadline > OLD.deadline);
+  dl_slip    BOOLEAN := OLD.due_sprint IS NOT NULL AND (NEW.due_sprint IS NULL OR NEW.due_sprint > OLD.due_sprint);
   sp_slip    BOOLEAN := (NEW.sprint_year, NEW.sprint_number) > (OLD.sprint_year, OLD.sprint_number);
 BEGIN
   IF (dl_slip OR sp_slip) AND OLD.status <> 'done' AND why IS NULL THEN
     RAISE EXCEPTION 'REASON_REQUIRED: "%" is being pushed back', OLD.name;
   END IF;
 
-  IF NEW.deadline IS DISTINCT FROM OLD.deadline THEN
+  IF NEW.due_sprint IS DISTINCT FROM OLD.due_sprint AND OLD.due_sprint IS NOT NULL THEN
     INSERT INTO task_events (task_id, task_name, kind, old_value, new_value, reason)
-    VALUES (NEW.id, NEW.name, 'deadline_moved', OLD.deadline::text, NEW.deadline::text, CASE WHEN dl_slip THEN why END);
+    VALUES (NEW.id, NEW.name, 'deadline_moved',
+            (OLD.due_sprint / 100) || '-S' || lpad((OLD.due_sprint % 100)::text, 2, '0'),
+            CASE WHEN NEW.due_sprint IS NULL THEN 'none' ELSE (NEW.due_sprint / 100) || '-S' || lpad((NEW.due_sprint % 100)::text, 2, '0') END,
+            CASE WHEN dl_slip THEN why END);
   END IF;
   IF (NEW.sprint_year, NEW.sprint_number) IS DISTINCT FROM (OLD.sprint_year, OLD.sprint_number) THEN
     INSERT INTO task_events (task_id, task_name, kind, old_value, new_value, reason)
@@ -107,7 +124,9 @@ BEGIN
   END IF;
   IF NEW.status = 'done' AND OLD.status <> 'done' THEN
     INSERT INTO task_events (task_id, task_name, kind, new_value, on_time)
-    VALUES (NEW.id, NEW.name, 'completed', NEW.deadline::text, NEW.deadline IS NULL OR now() <= NEW.deadline);
+    VALUES (NEW.id, NEW.name, 'completed',
+            CASE WHEN NEW.due_sprint IS NULL THEN NULL ELSE (NEW.due_sprint / 100) || '-S' || lpad((NEW.due_sprint % 100)::text, 2, '0') END,
+            NEW.due_sprint IS NULL OR current_sprint_key() <= NEW.due_sprint);   -- on time = done by the end of the due sprint
   ELSIF OLD.status = 'done' AND NEW.status <> 'done' THEN
     INSERT INTO task_events (task_id, task_name, kind) VALUES (NEW.id, NEW.name, 'reopened');
   END IF;
@@ -138,3 +157,22 @@ CREATE TABLE IF NOT EXISTS ceremonies (
 -- One daily scrum per day; one planning/review/retro per sprint (re-recording updates it)
 CREATE UNIQUE INDEX IF NOT EXISTS ceremonies_daily_uq  ON ceremonies (day) WHERE kind = 'daily_scrum';
 CREATE UNIQUE INDEX IF NOT EXISTS ceremonies_sprint_uq ON ceremonies (kind, sprint_year, sprint_number) WHERE kind <> 'daily_scrum';
+
+-- =====================================================================
+-- 7. One-off conversion of existing tasks from dates to sprints
+--    (runs only while some task is missing a start/due sprint; triggers paused so
+--     "last updated" and the audit log aren't touched by the conversion)
+-- =====================================================================
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM tasks WHERE start_sprint IS NULL OR due_sprint IS NULL) THEN
+    ALTER TABLE tasks DISABLE TRIGGER tasks_before_update;
+    ALTER TABLE tasks DISABLE TRIGGER tasks_audit;
+    UPDATE tasks SET
+      start_sprint = COALESCE(start_sprint, sprint_key(start_date), sprint_year * 100 + sprint_number),
+      due_sprint   = COALESCE(due_sprint, sprint_key((deadline AT TIME ZONE 'Europe/London')::date), sprint_year * 100 + sprint_number)
+    WHERE start_sprint IS NULL OR due_sprint IS NULL;
+    ALTER TABLE tasks ENABLE TRIGGER tasks_before_update;
+    ALTER TABLE tasks ENABLE TRIGGER tasks_audit;
+  END IF;
+END $$;

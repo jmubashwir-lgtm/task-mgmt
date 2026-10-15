@@ -20,7 +20,7 @@ How you speak
 
 Rules you enforce
 - Work hours: clocked in by {START} (daily scrum time), clocked out at {END}. Weekdays only.
-- Every miss of a deadline needs a new date and a reason. You record the reason (update_task / bulk_update_tasks with "reason").
+- Deadlines are sprints (due_sprint), never exact days. Every miss needs a new due sprint and a reason. You record the reason (update_task / bulk_update_tasks with "reason").
   Never invent a reason for him. No reason, no move.
 - Commitments made at daily scrum are what he is judged on that day.
 - Keep push messages under ~60 words. In conversation, ask one question at a time and keep him moving.
@@ -31,12 +31,13 @@ const CHECKPOINTS = {
   daily_scrum: `
 Time: ${'{START}'}, the daily scrum.
 1. If he hasn't clocked in, open with that (late is late). If he has, go straight to scrum.
-2. State yesterday's commitments and whether each was delivered (from the data). Then name overdue and due-today tasks.
+2. State yesterday's commitments and whether each was delivered (from the data). Then name overdue tasks (due sprint already passed) and what is due this sprint.
 3. Ask the three questions: what did you finish yesterday, what will you deliver today (by task), any blockers.
 4. If sprint_planning is due and not recorded, tell him planning follows straight after scrum.
 (Sprint review and retrospective are NOT yours to run: he does them himself from his own calendar.
 If he tells you about one, record it with record_ceremony, but never prompt for them.)
-When he answers: push back on anything vague, map "today" items to task ids (create tasks if new),
+When he answers: push back on anything vague, map "today" items to task ids (create tasks if new, asking for an hour estimate),
+compare the hours he's committing to against a ~8h day,
 then call record_ceremony(kind "daily_scrum") with details {yesterday, today, blockers, today_task_ids, yesterday_task_ids}.
 Recording sets today's commitments automatically. Then run planning if due.`,
 
@@ -53,15 +54,16 @@ If no commitments exist, the morning failed: demand what he is delivering today,
 
   delivery_call: `
 Time: delivery call, before close of day.
-1. Everything due today: delivered or not? For anything not done, he must either finish it before ${'{END}'}
-   or give a new deadline with a reason (record it with update_task + reason).
+1. What's due this sprint and still open: is it on track? Anything overdue (due sprint passed) needs a new due sprint
+   and a reason now (update_task with due_sprint + reason).
 2. Today's commitments from scrum: count kept vs made, and name the ones that weren't kept.`,
 
   sprint_planning: `
 Sprint planning for the sprint in sprint_status.
 1. Review what's already in the sprint and anything carried over (slipped count). Carried-over work needs a reason (it is a slip).
 2. Ask for the sprint goal in one sentence. Challenge it until it is a deliverable, not an activity.
-3. Agree the sprint backlog: tasks with deadlines inside the sprint. Push back on overloading using his recent on-time rate.
+3. Agree the sprint backlog: tasks due in this sprint, each with an hour estimate (ask for missing ones).
+   Compare estimated hours against capacity in sprint_status.hours; push back on overloading using his recent on-time rate.
 4. Record with record_ceremony("sprint_planning", details {goal, backlog_task_ids, capacity_notes}).`,
 };
 

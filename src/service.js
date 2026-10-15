@@ -1,14 +1,15 @@
 // All task/category logic lives here. Both the web API and (Step 3) the
 // Claude MCP endpoint call these same functions, so behaviour is identical.
 const { pool } = require('./db');
-const { sprintFor, sprintRange, workingDays } = require('./sprint');
+const { sprintFor, sprintRange, workingDays, key, keyLabel, currentKey, parseSprint } = require('./sprint');
 
 // Brand accents. Order spreads contrast; the guideline's 'Green' hex (#5C47C7) is a typo,
 // so the swatch colour is used instead.
 const ACCENTS = ['#383AFF', '#FB7C46', '#8146FF', '#7CFE86', '#FF3CE1', '#7BFDFD', '#FC3A5D', '#FCED67'];
 const STATUSES = ['todo', 'in_progress', 'done'];
-const EDITABLE = ['name', 'category_id', 'status', 'notes', 'start_date', 'deadline',
+const EDITABLE = ['name', 'category_id', 'status', 'notes', 'start_sprint', 'due_sprint', 'estimate_hours',
                   'sprint_year', 'sprint_number', 'position', 'calendar_event_id'];
+const HOURS_PER_DAY = 8;   // capacity assumption for sprint planning
 
 class BadRequest extends Error { constructor(m) { super(m); this.status = 400; } }
 class NotFound extends Error { constructor(m) { super(m); this.status = 404; } }
@@ -90,9 +91,19 @@ function londonToIso(s) {
 }
 
 function validate(t) {
-  if (t.deadline) {
-    t.deadline = londonToIso(t.deadline);
-    if (Number.isNaN(Date.parse(t.deadline))) throw new BadRequest('deadline is not a valid date');
+  // Legacy inputs: an exact date is converted to the sprint it falls in
+  if (t.deadline !== undefined && t.due_sprint === undefined) t.due_sprint = t.deadline ? key(...Object.values(sprintFor(String(t.deadline).slice(0, 10)))) : null;
+  if (t.start_date !== undefined && t.start_sprint === undefined) t.start_sprint = t.start_date ? key(...Object.values(sprintFor(String(t.start_date).slice(0, 10)))) : null;
+  delete t.deadline; delete t.start_date;
+  try {
+    if (t.start_sprint !== undefined) t.start_sprint = parseSprint(t.start_sprint);
+    if (t.due_sprint !== undefined) t.due_sprint = parseSprint(t.due_sprint);
+  } catch (e) { throw new BadRequest(e.message); }
+  if (t.start_sprint && t.due_sprint && t.start_sprint > t.due_sprint) throw new BadRequest('Start sprint must not be after the due sprint');
+  if (t.estimate_hours !== undefined && t.estimate_hours !== null) {
+    const h = Number(t.estimate_hours);
+    if (!Number.isFinite(h) || h < 0 || h > 9999) throw new BadRequest('estimate_hours must be a number of hours (0 or more)');
+    t.estimate_hours = Math.round(h * 4) / 4;   // quarter-hour precision
   }
   if (t.status !== undefined && !STATUSES.includes(t.status)) throw new BadRequest(`status must be one of ${STATUSES.join(', ')}`);
   if (t.sprint_number !== undefined && (t.sprint_number < 1 || t.sprint_number > 26)) throw new BadRequest('sprint_number must be 1-26');
@@ -105,7 +116,8 @@ async function listTasks(f = {}) {
   if (f.category_id) add('t.category_id = ?', Number(f.category_id));
   if (f.sprint_year) add('t.sprint_year = ?', Number(f.sprint_year));
   if (f.sprint_number) add('t.sprint_number = ?', Number(f.sprint_number));
-  if (f.overdue === 'true' || f.overdue === true) where.push(`t.deadline < now() AND t.status <> 'done'`);
+  if (f.overdue === 'true' || f.overdue === true) where.push(`t.due_sprint < current_sprint_key() AND t.status <> 'done'`);
+  if (f.due_sprint) add('t.due_sprint = ?', parseSprint(f.due_sprint));
   if (f.q) add('t.name ILIKE ?', `%${f.q}%`);
   const sql = `${TASK_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                ORDER BY t.position, t.id`;
@@ -122,16 +134,17 @@ async function createTask(input) {
   if (!input.name || !input.name.trim()) throw new BadRequest('Task name is required');
   await resolveCategory(input);
   validate(input);
-  // Default sprint = the sprint containing the deadline, else today's sprint.
+  // Defaults: worked in the current sprint, starting and due in that same sprint.
+  // If only a due sprint is given, the task is planned into that sprint.
   if (!input.sprint_number) {
-    const s = sprintFor(input.deadline ? new Date(input.deadline) : new Date());
-    input.sprint_year = s.year; input.sprint_number = s.number;
+    const k = input.due_sprint || currentKey();
+    input.sprint_year = Math.floor(k / 100); input.sprint_number = k % 100;
   }
   if (!input.sprint_year) input.sprint_year = sprintFor().year;
-  // Start date defaults to today in London (the DB server runs in UTC).
-  if (!input.start_date) {
-    input.start_date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
-  }
+  const planned = key(input.sprint_year, input.sprint_number);
+  if (!input.start_sprint) input.start_sprint = Math.min(planned, input.due_sprint || planned);
+  if (input.due_sprint === undefined) input.due_sprint = Math.max(planned, input.start_sprint);
+  if (input.due_sprint && input.start_sprint > input.due_sprint) throw new BadRequest('Start sprint must not be after the due sprint');
   // New tasks go to the bottom of their column.
   if (input.position === undefined) {
     input.position = (await pool.query('SELECT COALESCE(max(position), 0) + 1 AS p FROM tasks')).rows[0].p;
@@ -164,7 +177,7 @@ async function deleteTask(id) {
 // ---------- bulk ----------
 // One UPDATE statement changes every selected task at once (all-or-nothing).
 // Supported changes: status, category, sprint (set, or "next" relative to each task),
-// deadline (set to a date, clear, or shift each task's deadline by N days).
+// due sprint (set, or shift each task's due sprint by N sprints), estimate.
 function checkIds(ids) {
   if (!Array.isArray(ids) || !ids.length) throw new BadRequest('ids must be a non-empty array');
   if (ids.length > 500) throw new BadRequest('At most 500 tasks at a time');
@@ -189,12 +202,15 @@ async function bulkUpdate(ids, input = {}) {
     set.push(`sprint_number = ${param(input.sprint_number)}`);
     set.push(`sprint_year = ${param(input.sprint_year || sprintFor().year)}`);
   }
-  if (input.deadline !== undefined) set.push(`deadline = ${param(input.deadline)}`);
-  else if (input.deadline_shift_days) {
-    const d = Number(input.deadline_shift_days);
-    if (!Number.isInteger(d)) throw new BadRequest('deadline_shift_days must be an integer');
-    set.push(`deadline = deadline + make_interval(days => ${param(d)})`);  // tasks without a deadline stay without
+  if (input.due_sprint !== undefined) set.push(`due_sprint = ${param(input.due_sprint)}`);
+  else if (input.due_shift_sprints) {
+    const n = Number(input.due_shift_sprints);
+    if (!Number.isInteger(n)) throw new BadRequest('due_shift_sprints must be an integer');
+    // sprint key -> running sprint count -> shifted -> back to key (handles year boundaries)
+    const ord = `((due_sprint / 100) * 26 + (due_sprint % 100) - 1 + ${param(n)})`;
+    set.push(`due_sprint = CASE WHEN due_sprint IS NULL THEN NULL ELSE (${ord} / 26) * 100 + (${ord} % 26) + 1 END`);
   }
+  if (input.estimate_hours !== undefined) set.push(`estimate_hours = ${param(input.estimate_hours)}`);
   if (!set.length) throw new BadRequest('Nothing to change');
 
   // London time zone inside tx(): "+1 day" keeps the same clock time across clock changes
@@ -244,8 +260,9 @@ async function today() {
   const day = londonYmd();
   const wd = (await pool.query(`SELECT * FROM workdays WHERE day = ${TODAY}`)).rows[0] || { day, clock_in: null, clock_out: null, commitments: [], eod_report: null };
   const commit = wd.commitments?.length ? (await pool.query(`${TASK_SELECT} WHERE t.id = ANY($1)`, [wd.commitments])).rows : [];
-  const dueToday = (await pool.query(`${TASK_SELECT} WHERE (t.deadline AT TIME ZONE 'Europe/London')::date = ${TODAY} ORDER BY t.deadline`)).rows;
-  const overdue = (await pool.query(`${TASK_SELECT} WHERE t.deadline < now() AND t.status <> 'done' ORDER BY t.deadline`)).rows;
+  const dueSprint = (await pool.query(`${TASK_SELECT} WHERE t.due_sprint = current_sprint_key() ORDER BY t.status DESC, t.position`)).rows;
+  const overdue = (await pool.query(`${TASK_SELECT} WHERE t.due_sprint < current_sprint_key() AND t.status <> 'done' ORDER BY t.due_sprint, t.position`)).rows;
+  const brief = (t) => ({ id: t.id, name: t.name, status: t.status, due_sprint: keyLabel(t.due_sprint), estimate_hours: t.estimate_hours });
   const nowHm = londonHm(new Date());
   const dow = new Date(`${day}T12:00:00Z`).getUTCDay();
   return {
@@ -253,10 +270,12 @@ async function today() {
     clock_in: wd.clock_in ? londonHm(wd.clock_in) : null,
     clock_out: wd.clock_out ? londonHm(wd.clock_out) : null,
     late: wd.clock_in ? londonHm(wd.clock_in) > WORK_START : nowHm > WORK_START,
-    commitments: commit.map((t) => ({ id: t.id, name: t.name, status: t.status, deadline: t.deadline })),
+    current_sprint: keyLabel(currentKey()),
+    commitments: commit.map(brief),
+    commitments_estimate_hours: commit.reduce((a, t) => a + (t.estimate_hours || 0), 0),
     eod_report: wd.eod_report || null,
-    due_today: dueToday.map((t) => ({ id: t.id, name: t.name, status: t.status, deadline: t.deadline })),
-    overdue: overdue.map((t) => ({ id: t.id, name: t.name, deadline: t.deadline, sprint_moved_count: t.sprint_update_count })),
+    due_this_sprint: dueSprint.map(brief),
+    overdue: overdue.map((t) => ({ ...brief(t), sprint_moved_count: t.sprint_update_count })),
     ceremonies_due: await ceremoniesDue(day),
   };
 }
@@ -299,7 +318,7 @@ async function scorecard(days = 30) {
 
   const completed = ev.filter((e) => e.kind === 'completed');
   const slips = ev.filter((e) => e.reason);
-  const overdueNow = (await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE deadline < now() AND status <> 'done'`)).rows[0].n;
+  const overdueNow = (await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE due_sprint < current_sprint_key() AND status <> 'done'`)).rows[0].n;
   return {
     period: `${start} to ${todayYmd}`, work_hours: `${WORK_START}-${WORK_END}`,
     attendance: { working_days: expected, on_time: onTime, late, absent, left_early: leftEarly,
@@ -405,7 +424,10 @@ async function sprintStatus(year, number) {
     `SELECT * FROM task_events WHERE created_at >= $1::date AND created_at < ($2::date + 1)`, [r.start, r.end])).rows;
   const cer = (await pool.query('SELECT kind, day FROM ceremonies WHERE sprint_year = $1 AND sprint_number = $2', [year, number])).rows;
   const today = londonYmd(), elapsed = wd.filter((d) => d <= today);
-  const t = (x) => ({ id: x.id, name: x.name, status: x.status, category: x.category_name, deadline: x.deadline, slipped: x.sprint_update_count });
+  const t = (x) => ({ id: x.id, name: x.name, status: x.status, category: x.category_name, due_sprint: keyLabel(x.due_sprint),
+    estimate_hours: x.estimate_hours, slipped: x.sprint_update_count });
+  const hrs = (list) => list.reduce((a, x) => a + (x.estimate_hours || 0), 0);
+  const dueHere = (await pool.query(`${TASK_SELECT} WHERE t.due_sprint = $1 AND NOT (t.sprint_year = $2 AND t.sprint_number = $3)`, [key(year, number), year, number])).rows;
   const planning = (await pool.query(`SELECT details FROM ceremonies WHERE kind = 'sprint_planning' AND sprint_year = $1 AND sprint_number = $2`, [year, number])).rows[0];
   return {
     sprint: r.label, start: r.start, end: r.end, working_days: wd.length, working_days_elapsed: elapsed.length,
@@ -414,6 +436,10 @@ async function sprintStatus(year, number) {
     done: tasks.filter((x) => x.status === 'done').map(t),
     in_progress: tasks.filter((x) => x.status === 'in_progress').map(t),
     todo: tasks.filter((x) => x.status === 'todo').map(t),
+    hours: { estimated_total: hrs(tasks), estimated_open: hrs(tasks.filter((x) => x.status !== 'done')),
+      unestimated_tasks: tasks.filter((x) => x.estimate_hours == null).length,
+      capacity: wd.length * HOURS_PER_DAY, capacity_note: `${wd.length} working days × ${HOURS_PER_DAY}h` },
+    due_here_but_planned_elsewhere: dueHere.map(t),
     completed_in_window: { on_time: ev.filter((e) => e.kind === 'completed' && e.on_time).length, late: ev.filter((e) => e.kind === 'completed' && !e.on_time).length },
     excuses_in_window: ev.filter((e) => e.reason).map((e) => ({ task: e.task_name, change: `${e.old_value} → ${e.new_value}`, reason: e.reason })),
     ceremonies: {
@@ -430,13 +456,13 @@ async function summary() {
   const cur = sprintFor();
   const { rows } = await pool.query(`
     SELECT
-      (count(*) FILTER (WHERE status <> 'done' AND deadline < now()))::int                        AS overdue,
-      (count(*) FILTER (WHERE status <> 'done' AND deadline >= now()
-                         AND deadline < now() + interval '7 days'))::int                          AS due_this_week,
+      (count(*) FILTER (WHERE status <> 'done' AND due_sprint < current_sprint_key()))::int       AS overdue,
+      (count(*) FILTER (WHERE status <> 'done' AND due_sprint = current_sprint_key()))::int       AS due_this_sprint,
+      COALESCE(sum(estimate_hours) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status <> 'done'), 0)::float AS open_hours_in_sprint,
       (count(*) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status <> 'done'))::int AS open_in_sprint,
       (count(*) FILTER (WHERE sprint_year = $1 AND sprint_number = $2 AND status = 'done'))::int  AS done_in_sprint
     FROM tasks`, [cur.year, cur.number]);
-  return { current_sprint: sprintRange(cur.year, cur.number), ...rows[0] };
+  return { current_sprint: sprintRange(cur.year, cur.number), sprint_capacity_hours: workingDays(cur.year, cur.number).length * HOURS_PER_DAY, ...rows[0] };
 }
 
 module.exports = {

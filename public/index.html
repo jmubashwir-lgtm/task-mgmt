@@ -37,14 +37,7 @@
         <option value="status">Status</option>
         <option value="category">Category</option>
         <option value="sprint">Sprint</option>
-        <option value="deadline">Deadline</option>
-      </select>
-    </label>
-    <label class="field-inline" id="zoomWrap" hidden>
-      <span class="mono">Zoom</span>
-      <select id="zoom">
-        <option value="34">Days</option>
-        <option value="14">Weeks</option>
+        <option value="due">Due sprint</option>
       </select>
     </label>
     <div class="filters">
@@ -82,8 +75,8 @@
         </div>
       </div>
       <div class="row2">
-        <label class="field"><span>Start</span><input type="date" name="start_date"></label>
-        <label class="field"><span>Deadline</span><input type="datetime-local" name="deadline"></label>
+        <label class="field"><span>Start sprint</span><select name="start_sprint"></select></label>
+        <label class="field"><span>Due sprint</span><select name="due_sprint"></select></label>
       </div>
       <label class="field"><span>Sprint</span>
         <div class="row2 tight">
@@ -91,6 +84,8 @@
           <select name="sprint_number"></select>
         </div>
       </label>
+      <label class="field"><span>Estimate <em class="mono">work hours to deliver</em></span>
+        <input name="estimate_hours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="e.g. 3.5"></label>
       <label class="field"><span>Notes</span><textarea name="notes" rows="4"></textarea></label>
       <dl class="meta mono" id="meta"></dl>
       <div class="drawer-actions">
@@ -110,8 +105,9 @@
     <span class="bgroup"><input id="bCategory" list="catList" placeholder="Category…" aria-label="Set category"><button class="bbtn" id="bCatApply">Set</button></span>
     <select id="bSprint" aria-label="Set sprint"></select>
     <span class="bsep"></span>
-    <label class="blabel mono">Due <input type="date" id="bDeadline" aria-label="Set deadline"></label>
-    <span class="bgroup"><button class="bbtn" data-shift="-1">−1d</button><button class="bbtn" data-shift="1">+1d</button><button class="bbtn" data-shift="7">+1w</button></span>
+    <select id="bDue" aria-label="Set due sprint"></select>
+    <span class="bgroup"><button class="bbtn" data-shift="-1" title="Due one sprint earlier">Due −1</button><button class="bbtn" data-shift="1" title="Due one sprint later (needs a reason)">Due +1</button></span>
+    <input id="bEstimate" type="number" min="0" step="0.25" placeholder="Est. h ↵" aria-label="Set estimate hours" title="Type hours and press Enter">
     <span class="bsep"></span>
     <button class="bbtn danger" id="bDelete">Delete</button>
     <button class="bbtn" id="bClear" aria-label="Clear selection">✕</button>

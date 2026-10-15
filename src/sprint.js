@@ -49,7 +49,27 @@ function workingDays(year, number) {
   return out;
 }
 
+// Sprint "keys": one comparable number per sprint, year*100 + sprint (2026-S22 = 202622)
+const key = (year, number) => year * 100 + number;
+const fromKey = (k) => ({ year: Math.floor(k / 100), number: k % 100 });
+const keyLabel = (k) => (k ? sprintRange(Math.floor(k / 100), k % 100).label : null);
+const currentKey = () => { const s = sprintFor(new Date()); return key(s.year, s.number); };
+function addSprints(k, n) {                       // move n sprints forward/back across year boundaries
+  const ord = Math.floor(k / 100) * LAST_SPRINT + (k % 100) - 1 + n;
+  return key(Math.floor(ord / LAST_SPRINT), (ord % LAST_SPRINT) + 1);
+}
+// Accepts 202622, "2026-S22", "S22" or 22 (current year)
+function parseSprint(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return v > 1000 ? v : key(sprintFor(new Date()).year, v);
+  const m = /^(?:(\d{4})\s*-?\s*)?S?\s*(\d{1,2})$/i.exec(String(v).trim());
+  if (!m) { const n = Number(v); if (Number.isInteger(n)) return parseSprint(n); throw new Error(`Not a sprint: ${v}`); }
+  const year = m[1] ? Number(m[1]) : sprintFor(new Date()).year, number = Number(m[2]);
+  if (number < 1 || number > LAST_SPRINT) throw new Error(`Sprint must be 1-${LAST_SPRINT}`);
+  return key(year, number);
+}
+
 // Works in Node (server) and the browser (served at /sprint.js) — one source of truth.
-const Sprint = { sprintFor, sprintRange, workingDays, LAST_SPRINT };
+const Sprint = { sprintFor, sprintRange, workingDays, key, fromKey, keyLabel, currentKey, addSprints, parseSprint, LAST_SPRINT };
 if (typeof module !== 'undefined') module.exports = Sprint;
 else window.Sprint = Sprint;

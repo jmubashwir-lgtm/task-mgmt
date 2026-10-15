@@ -124,7 +124,7 @@ main { padding: 0 24px 40px; }
 .group-head { display: flex; align-items: center; gap: 10px; padding: 6px 4px; font-weight: 600; }
 .list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; min-height: 44px; }
 .row {
-  display: grid; grid-template-columns: 22px minmax(180px, 2.4fr) 1.1fr .9fr 1fr .9fr .8fr;
+  display: grid; grid-template-columns: 22px minmax(180px, 2.4fr) 1.1fr .9fr .9fr .8fr .5fr .7fr;
   gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); cursor: grab; background: var(--surface);
 }
 .list .row:first-child { border-top: 0; }
@@ -133,7 +133,7 @@ main { padding: 0 24px 40px; }
 .row .name { font-weight: 500; }
 .row.done .name { text-decoration: line-through; color: var(--muted); }
 .row .cell { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.row-head { display: grid; grid-template-columns: 22px minmax(180px, 2.4fr) 1.1fr .9fr 1fr .9fr .8fr; gap: 12px; padding: 0 14px 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.row-head { display: grid; grid-template-columns: 22px minmax(180px, 2.4fr) 1.1fr .9fr .9fr .8fr .5fr .7fr; gap: 12px; padding: 0 14px 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 .list-empty { padding: 12px 14px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
 .status-tag { font-family: var(--mono); font-size: 11px; }
 .status-tag.in_progress { color: var(--g500); }
@@ -154,7 +154,7 @@ main { padding: 0 24px 40px; }
 .g-label span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-label:hover span { text-decoration: underline; }
 .g-track { position: relative; flex: none; }
-.g-band { position: absolute; top: 0; bottom: 0; background: rgba(101,188,123,.05); pointer-events: none; }
+.g-band { pointer-events: none; }
 .g-wkend { position: absolute; top: 0; bottom: 0; background: rgba(12,12,13,.025); pointer-events: none; }
 .g-todayline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--green); z-index: 1; pointer-events: none; }
 .g-bar {
@@ -298,6 +298,7 @@ body.selecting .toast { bottom: 86px; }
 .progress { height: 8px; background: var(--col-bg); border-radius: 999px; overflow: hidden; }
 .progress > div { height: 100%; background: var(--green); border-radius: 999px; }
 .prog-l { font-size: 11px; color: var(--muted); }
+.prog-l.over { color: var(--red); }
 .cers, .due-cers { display: flex; gap: 8px; flex-wrap: wrap; }
 .due-cers { margin-top: 10px; }
 .cer { font-family: var(--mono); font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
@@ -327,6 +328,19 @@ body.selecting .toast { bottom: 86px; }
 .tchip.done { text-decoration: line-through; color: var(--muted); }
 .tchip.in_progress span { color: var(--g500); }
 .tchip.gone { opacity: .5; cursor: default; }
+
+/* ---------- Sprint dates + estimates ---------- */
+.hrs { font-size: 11px; color: var(--g500); border: 1px solid var(--g300); border-radius: 999px; padding: 0 7px; margin-left: 2px; }
+.chip.est { color: var(--text); }
+.bulkbar #bEstimate { width: 92px; }
+.g-sp { position: absolute; top: 0; height: 58px; border-left: 1px solid var(--line); padding: 8px 10px; font-size: 11px; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.g-sp b { font-size: 13px; }
+.g-sp span { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+.g-sp em { font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--g500); }
+.g-sp.g-cur b { color: var(--g500); }
+.g-band { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); background: none; }
+.g-band.g-cur { background: rgba(101,188,123,.07); }
+.g-label em { font-style: normal; font-size: 10px; color: var(--muted); margin-left: auto; flex: none; }
 
 /* ---------- Mobile ---------- */
 @media (max-width: 760px) {

@@ -16,7 +16,7 @@ app.get('/vendor/sortable.js', (_req, res) =>
 const h = (fn) => (req, res) =>
   Promise.resolve(fn(req, res))
     .then((out) => (out === undefined ? res.status(204).end() : res.json(out)))
-    .catch((e) => res.status(e.status || 500).json({ error: e.message }));
+    .catch((e) => res.status(e.status || 500).json({ error: e.message, code: e.code }));
 
 // Claude connector (MCP). GET/DELETE aren't needed in stateless mode.
 const { handleMcp } = require('./mcp');
@@ -31,6 +31,15 @@ app.get('/api/sprints/current', h(() => { const s = svc.sprintFor(); return svc.
 app.get('/api/sprints/:year/:number', h((r) => svc.sprintRange(+r.params.year, +r.params.number)));
 app.get('/api/summary', h(() => svc.summary()));
 
+// Boss: work record
+app.get('/api/work/today', h(() => svc.today()));
+app.post('/api/work/clock-in', h(() => svc.clockIn()));
+app.post('/api/work/clock-out', h(() => svc.clockOut()));
+app.put('/api/work/commitments', h((r) => svc.setCommitments(r.body.ids)));
+app.post('/api/work/eod', h((r) => svc.submitEod(r.body.report)));
+app.get('/api/work/scorecard', h((r) => svc.scorecard(r.query.days)));
+app.get('/api/work/excuses', h((r) => svc.excuses(r.query.days)));
+
 // Categories
 app.get('/api/categories', h(() => svc.listCategories()));
 app.post('/api/categories', h((r) => svc.createCategory(r.body)));
@@ -40,7 +49,7 @@ app.delete('/api/categories/:id', h((r) => svc.deleteCategory(+r.params.id)));
 // Tasks
 app.get('/api/tasks', h((r) => svc.listTasks(r.query)));
 // Bulk (registered before /:id so "bulk" isn't read as an id)
-app.post('/api/tasks/bulk-update', h((r) => svc.bulkUpdate(r.body.ids, r.body.patch)));
+app.post('/api/tasks/bulk-update', h((r) => svc.bulkUpdate(r.body.ids, { ...r.body.patch, reason: r.body.reason ?? r.body.patch?.reason })));
 app.post('/api/tasks/bulk-delete', h((r) => svc.bulkDelete(r.body.ids)));
 app.get('/api/tasks/:id', h((r) => svc.getTask(+r.params.id)));
 app.post('/api/tasks', h((r) => svc.createTask(r.body)));

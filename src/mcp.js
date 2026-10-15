@@ -91,19 +91,23 @@ function buildServer() {
     description: 'Change any fields of a task. Changing the sprint increases its "sprint moved" count. ' +
       'After blocking calendar time, save the Google Calendar event id here as calendar_event_id.',
     inputSchema: { id: z.number().int(), name: z.string().optional(), ...taskFields,
-      calendar_event_id: z.string().nullable().optional().describe('Google Calendar event id of the time block') },
+      calendar_event_id: z.string().nullable().optional().describe('Google Calendar event id of the time block'),
+  reason: z.string().optional().describe('Required when pushing a deadline later or moving to a later sprint. Get it from Jawad — never invent one.'),
+    },
     annotations: { idempotentHint: true },
   }, run(async ({ id, ...a }) => brief(await svc.updateTask(id, a))));
 
   server.registerTool('move_to_sprint', {
     title: 'Move to sprint',
     description: 'Move a task to another sprint ("next" = the sprint after its current one). Increases the sprint moved count.',
-    inputSchema: { id: z.number().int(), sprint: z.union([z.literal('next'), z.number().int().min(1).max(26)]), sprint_year: z.number().int().optional() },
-  }, run(async ({ id, sprint, sprint_year }) => {
+    inputSchema: { id: z.number().int(), sprint: z.union([z.literal('next'), z.number().int().min(1).max(26)]), sprint_year: z.number().int().optional(),
+  reason: z.string().optional().describe('Required when pushing a deadline later or moving to a later sprint. Get it from Jawad — never invent one.'),
+    },
+  }, run(async ({ id, sprint, sprint_year, reason }) => {
     const t = await svc.getTask(id);
     let y = sprint_year || t.sprint_year, n = sprint;
     if (sprint === 'next') { n = t.sprint_number === 26 ? 1 : t.sprint_number + 1; if (t.sprint_number === 26) y = t.sprint_year + 1; }
-    return brief(await svc.updateTask(id, { sprint_year: y, sprint_number: n }));
+    return brief(await svc.updateTask(id, { sprint_year: y, sprint_number: n, reason }));
   }));
 
   server.registerTool('complete_task', {
@@ -133,6 +137,7 @@ function buildServer() {
       move_to_next_sprint: z.boolean().optional(),
       deadline: z.string().nullable().optional().describe(deadlineDesc),
       shift_deadline_days: z.number().int().optional(),
+  reason: z.string().optional().describe('Required when pushing a deadline later or moving to a later sprint. Get it from Jawad — never invent one.'),
     },
   }, run(async ({ ids, move_to_next_sprint, shift_deadline_days, ...a }) =>
     svc.bulkUpdate(ids, { ...a, sprint_next: move_to_next_sprint, deadline_shift_days: shift_deadline_days })));
@@ -143,6 +148,42 @@ function buildServer() {
     inputSchema: { ids: z.array(z.number().int()).min(1) },
     annotations: { destructiveHint: true },
   }, run(async ({ ids }) => svc.bulkDelete(ids)));
+
+  // ---------- boss: work record ----------
+  server.registerTool('get_today', {
+    title: 'Today (work record)',
+    description: 'Jawad\'s work record for today: clock-in/out times, whether he is late, his committed tasks and their status, tasks due today, overdue tasks, and whether the end-of-day report is filed. Use at every check-in.',
+    inputSchema: {}, annotations: { readOnlyHint: true },
+  }, run(() => svc.today()));
+
+  server.registerTool('clock_in', {
+    title: 'Clock in', description: 'Record arrival at work now. The first clock-in of the day cannot be changed.',
+    inputSchema: {},
+  }, run(() => svc.clockIn()));
+
+  server.registerTool('clock_out', {
+    title: 'Clock out', description: 'Record finishing work now.', inputSchema: {},
+  }, run(() => svc.clockOut()));
+
+  server.registerTool('set_today_commitments', {
+    title: 'Set today\'s commitments', description: 'Record the task ids Jawad commits to delivering today (normally 3).',
+    inputSchema: { ids: z.array(z.number().int()).min(1) },
+  }, run(({ ids }) => svc.setCommitments(ids)));
+
+  server.registerTool('submit_eod_report', {
+    title: 'Submit end-of-day report', description: 'Record the end-of-day report: what shipped, what did not, and why.',
+    inputSchema: { report: z.string() },
+  }, run(({ report }) => svc.submitEod(report)));
+
+  server.registerTool('get_scorecard', {
+    title: 'Scorecard', description: 'Attendance (on-time/late/absent, streak), delivery (on-time vs late, slips, overdue), commitments kept and EOD reports for the last N days, plus a per-day ledger.',
+    inputSchema: { days: z.number().int().min(1).max(365).optional() }, annotations: { readOnlyHint: true },
+  }, run(({ days }) => svc.scorecard(days)));
+
+  server.registerTool('get_excuse_log', {
+    title: 'Excuse log', description: 'Every deadline/sprint push-back with the reason given, newest first. Use it to call out repeated excuses.',
+    inputSchema: { days: z.number().int().min(1).max(365).optional() }, annotations: { readOnlyHint: true },
+  }, run(({ days }) => svc.excuses(days)));
 
   server.registerTool('sprint_for_date', {
     title: 'Sprint for date',

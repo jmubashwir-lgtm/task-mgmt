@@ -18,6 +18,7 @@
     </div>
     <div class="sprint-pill mono" id="sprintPill">—</div>
     <div class="stats" id="stats"></div>
+    <button class="clock mono" id="clockBtn">Clock in</button>
     <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
   </header>
 
@@ -27,6 +28,7 @@
       <button class="tab" data-view="board">Board</button>
       <button class="tab" data-view="list">List</button>
       <button class="tab" data-view="gantt">Gantt</button>
+      <button class="tab" data-view="boss">Boss</button>
     </div>
     <label class="field-inline" id="groupWrap">
       <span class="mono">List by</span>
@@ -100,6 +102,7 @@
   <!-- Bulk action bar: appears when tasks are ticked -->
   <div class="bulkbar" id="bulkBar" hidden>
     <span class="bcount" id="bulkCount">0 selected</span>
+    <button class="bbtn commit" id="bCommit" title="Commit to delivering these today">Commit today</button>
     <select id="bStatus" aria-label="Set status">
       <option value="">Status…</option><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option>
     </select>

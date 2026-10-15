@@ -13,6 +13,28 @@ const EDITABLE = ['name', 'category_id', 'status', 'notes', 'start_date', 'deadl
 class BadRequest extends Error { constructor(m) { super(m); this.status = 400; } }
 class NotFound extends Error { constructor(m) { super(m); this.status = 404; } }
 
+// Run writes in one transaction, handing the "reason" to the database trigger.
+// The trigger refuses any deadline/sprint slip that arrives without one.
+async function tx(reason, fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL TIME ZONE 'Europe/London'`);
+    await client.query(`SELECT set_config('app.reason', $1, true)`, [reason ? String(reason).trim() : '']);
+    const out = await fn(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (/REASON_REQUIRED/.test(e.message)) {
+      const err = new BadRequest(`${e.message.replace(/^.*REASON_REQUIRED:\s*/, '')}. A reason is required to push a deadline or sprint back.`);
+      err.code = 'REASON_REQUIRED';
+      throw err;
+    }
+    throw e;
+  } finally { client.release(); }
+}
+
 const TASK_SELECT = `
   SELECT t.*, c.name AS category_name, c.color AS category_color
   FROM tasks t LEFT JOIN categories c ON c.id = t.category_id`;
@@ -126,9 +148,9 @@ async function updateTask(id, input) {
   validate(input);
   const cols = EDITABLE.filter((k) => input[k] !== undefined);
   if (!cols.length) return getTask(id);
-  const { rowCount } = await pool.query(
+  const { rowCount } = await tx(input.reason, (c) => c.query(
     `UPDATE tasks SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE id = $1`,
-    [id, ...cols.map((k) => input[k])]);
+    [id, ...cols.map((k) => input[k])]));
   if (!rowCount) throw new NotFound('Task not found');
   return getTask(id);
 }
@@ -175,21 +197,125 @@ async function bulkUpdate(ids, input = {}) {
   }
   if (!set.length) throw new BadRequest('Nothing to change');
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL TIME ZONE 'Europe/London'`); // "+1 day" keeps the same London clock time across clock changes
-    const { rows } = await client.query(`UPDATE tasks SET ${set.join(', ')} WHERE id = ANY($1) RETURNING id`, args);
-    await client.query('COMMIT');
-    return { updated: rows.length, ids: rows.map((r) => r.id) };
-  } catch (e) { await client.query('ROLLBACK'); throw e; }
-  finally { client.release(); }
+  // London time zone inside tx(): "+1 day" keeps the same clock time across clock changes
+  const { rows } = await tx(input.reason, (c) => c.query(`UPDATE tasks SET ${set.join(', ')} WHERE id = ANY($1) RETURNING id`, args));
+  return { updated: rows.length, ids: rows.map((r) => r.id) };
 }
 
 async function bulkDelete(ids) {
   ids = checkIds(ids);
   const { rows } = await pool.query('DELETE FROM tasks WHERE id = ANY($1) RETURNING id, name, calendar_event_id', [ids]);
   return { deleted: rows.length, calendar_events_to_remove: rows.filter((r) => r.calendar_event_id) };
+}
+
+// ---------- boss: work record ----------
+const WORK_START = process.env.WORK_START || '09:00';
+const WORK_END = process.env.WORK_END || '18:00';
+const TODAY = `(now() AT TIME ZONE 'Europe/London')::date`;
+const londonYmd = (d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(d);
+const londonHm = (d) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(d));
+
+async function upsertToday(setSql, args = []) {
+  await pool.query(`INSERT INTO workdays (day) VALUES (${TODAY}) ON CONFLICT (day) DO NOTHING`);
+  const { rows } = await pool.query(`UPDATE workdays SET ${setSql} WHERE day = ${TODAY} RETURNING *`, args);
+  return rows[0];
+}
+
+// First clock-in of the day sticks — it can't be redone to look punctual.
+const clockIn = () => upsertToday('clock_in = COALESCE(clock_in, now())').then(() => today());
+const clockOut = () => upsertToday('clock_out = now(), clock_in = COALESCE(clock_in, now())').then(() => today());
+
+async function setCommitments(ids) {
+  ids = checkIds(ids);
+  const found = (await pool.query('SELECT id FROM tasks WHERE id = ANY($1)', [ids])).rows.map((r) => r.id);
+  if (found.length !== ids.length) throw new BadRequest('Some task ids do not exist');
+  await upsertToday('commitments = $1', [ids]);
+  return today();
+}
+
+async function submitEod(report) {
+  if (!report || report.trim().length < 10) throw new BadRequest('End-of-day report is required (what shipped, what did not, why).');
+  await upsertToday('eod_report = $1, eod_at = now()', [report.trim()]);
+  return today();
+}
+
+// Everything the boss needs about today in one call
+async function today() {
+  const day = londonYmd();
+  const wd = (await pool.query(`SELECT * FROM workdays WHERE day = ${TODAY}`)).rows[0] || { day, clock_in: null, clock_out: null, commitments: [], eod_report: null };
+  const commit = wd.commitments?.length ? (await pool.query(`${TASK_SELECT} WHERE t.id = ANY($1)`, [wd.commitments])).rows : [];
+  const dueToday = (await pool.query(`${TASK_SELECT} WHERE (t.deadline AT TIME ZONE 'Europe/London')::date = ${TODAY} ORDER BY t.deadline`)).rows;
+  const overdue = (await pool.query(`${TASK_SELECT} WHERE t.deadline < now() AND t.status <> 'done' ORDER BY t.deadline`)).rows;
+  const nowHm = londonHm(new Date());
+  const dow = new Date(`${day}T12:00:00Z`).getUTCDay();
+  return {
+    date: day, now_london: nowHm, workday: dow >= 1 && dow <= 5, work_hours: `${WORK_START}-${WORK_END}`,
+    clock_in: wd.clock_in ? londonHm(wd.clock_in) : null,
+    clock_out: wd.clock_out ? londonHm(wd.clock_out) : null,
+    late: wd.clock_in ? londonHm(wd.clock_in) > WORK_START : nowHm > WORK_START,
+    commitments: commit.map((t) => ({ id: t.id, name: t.name, status: t.status, deadline: t.deadline })),
+    eod_report: wd.eod_report || null,
+    due_today: dueToday.map((t) => ({ id: t.id, name: t.name, status: t.status, deadline: t.deadline })),
+    overdue: overdue.map((t) => ({ id: t.id, name: t.name, deadline: t.deadline, sprint_moved_count: t.sprint_update_count })),
+  };
+}
+
+// Scorecard over the last N days (weekdays only)
+async function scorecard(days = 30) {
+  days = Math.min(Math.max(Number(days) || 30, 1), 365);
+  // Count only from the first day you ever clocked in (no penalties for days before the boss existed)
+  const first = (await pool.query('SELECT min(day) AS d FROM workdays')).rows[0].d || londonYmd();
+  let start = londonYmd(new Date(Date.now() - (days - 1) * 864e5));
+  if (first > start) { start = first; days = Math.round((Date.parse(londonYmd()) - Date.parse(first)) / 864e5) + 1; }
+  const wds = Object.fromEntries((await pool.query('SELECT * FROM workdays WHERE day >= $1', [start])).rows.map((r) => [r.day, r]));
+  const ev = (await pool.query(`SELECT * FROM task_events WHERE created_at >= $1::date`, [start])).rows;
+  const doneOn = {};   // task id -> London date it was completed
+  ev.filter((e) => e.kind === 'completed').forEach((e) => { doneOn[e.task_id] = londonYmd(e.created_at); });
+
+  const todayYmd = londonYmd(), nowHm = londonHm(new Date());
+  let expected = 0, onTime = 0, late = 0, absent = 0, leftEarly = 0, eodDue = 0, eodFiled = 0, committed = 0, kept = 0;
+  const ledger = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = londonYmd(new Date(Date.now() - i * 864e5));
+    const dow = new Date(`${d}T12:00:00Z`).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    if (d === todayYmd && nowHm <= WORK_START && !wds[d]?.clock_in) continue;   // today hasn't started yet
+    const w = wds[d] || {};
+    const inHm = w.clock_in ? londonHm(w.clock_in) : null;
+    expected++;
+    if (!inHm) absent++; else if (inHm <= WORK_START) onTime++; else late++;
+    const past = d < todayYmd;
+    if (past && w.clock_out && londonHm(w.clock_out) < WORK_END) leftEarly++;
+    if (past) { eodDue++; if (w.eod_report) eodFiled++; }
+    const c = w.commitments || [];
+    if (past) { committed += c.length; kept += c.filter((id) => doneOn[id] && doneOn[id] <= d).length; }
+    ledger.push({ date: d, in: inHm, out: w.clock_out ? londonHm(w.clock_out) : null, committed: c.length,
+      kept: c.filter((id) => doneOn[id] && doneOn[id] <= d).length, eod: !!w.eod_report });
+  }
+  // Streak: consecutive working days (most recent first) clocked in on time
+  let streak = 0;
+  for (const l of [...ledger].reverse()) { if (l.in && l.in <= WORK_START) streak++; else if (l.date === todayYmd && !l.in) continue; else break; }
+
+  const completed = ev.filter((e) => e.kind === 'completed');
+  const slips = ev.filter((e) => e.reason);
+  const overdueNow = (await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE deadline < now() AND status <> 'done'`)).rows[0].n;
+  return {
+    period: `${start} to ${todayYmd}`, work_hours: `${WORK_START}-${WORK_END}`,
+    attendance: { working_days: expected, on_time: onTime, late, absent, left_early: leftEarly,
+      on_time_pct: expected ? Math.round((onTime / expected) * 100) : null, streak_on_time: streak },
+    delivery: { completed: completed.length, on_time: completed.filter((e) => e.on_time).length,
+      late: completed.filter((e) => !e.on_time).length, slips_with_excuses: slips.length, overdue_now: overdueNow },
+    commitments: { committed, kept, kept_pct: committed ? Math.round((kept / committed) * 100) : null },
+    eod_reports: { due: eodDue, filed: eodFiled },
+    ledger: ledger.reverse(),
+  };
+}
+
+async function excuses(days = 30) {
+  const { rows } = await pool.query(
+    `SELECT task_id, task_name, kind, old_value, new_value, reason, created_at FROM task_events
+     WHERE reason IS NOT NULL AND created_at >= now() - make_interval(days => $1) ORDER BY created_at DESC`, [Number(days) || 30]);
+  return rows;
 }
 
 // Overview used by Claude and the UI header.
@@ -209,5 +335,6 @@ async function summary() {
 module.exports = {
   listCategories, createCategory, updateCategory, deleteCategory,
   listTasks, getTask, createTask, updateTask, deleteTask, summary, bulkUpdate, bulkDelete,
+  clockIn, clockOut, setCommitments, submitEod, today, scorecard, excuses,
   sprintFor, sprintRange, STATUSES,
 };

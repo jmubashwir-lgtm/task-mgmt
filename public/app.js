@@ -39,7 +39,15 @@ async function api(method, url, body) {
   const res = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 204) return null;
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    // The boss refuses silent slips: ask for a reason and retry once with it.
+    if (data.code === 'REASON_REQUIRED' && body && !body.reason) {
+      const why = prompt(`${data.error}\n\nWhy are you pushing this back? (Logged permanently.)`);
+      if (why && why.trim()) return api(method, url, { ...body, reason: why.trim() });
+      throw new Error('Not moved — no reason, no slip.');
+    }
+    throw new Error(data.error || 'Request failed');
+  }
   return data;
 }
 
@@ -50,10 +58,10 @@ function toast(msg) {
 
 // ---------- data ----------
 async function load() {
-  const [tasks, categories, summary] = await Promise.all([
-    api('GET', '/api/tasks'), api('GET', '/api/categories'), api('GET', '/api/summary'),
+  const [tasks, categories, summary, today] = await Promise.all([
+    api('GET', '/api/tasks'), api('GET', '/api/categories'), api('GET', '/api/summary'), api('GET', '/api/work/today'),
   ]);
-  Object.assign(state, { tasks, categories, summary });
+  Object.assign(state, { tasks, categories, summary, today });
   const ids = new Set(tasks.map((t) => t.id));
   state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); }); // drop deleted tasks
   renderChrome();
@@ -147,7 +155,9 @@ function renderChrome() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   $('#groupBy').value = state.groupBy;
   $('#zoom').value = String(state.zoom);
-  $('#groupWrap').hidden = state.view === 'gantt';
+  $('#groupWrap').hidden = state.view === 'gantt' || state.view === 'boss';
+  document.querySelector('.filters').style.visibility = state.view === 'boss' ? 'hidden' : '';
+  renderClock();
   $('#zoomWrap').hidden = state.view !== 'gantt';
 }
 
@@ -216,6 +226,7 @@ function render() {
   const tasks = visibleTasks();
   const main = $('#view');
   if (!state.tasks.length) { main.innerHTML = EMPTY; return; }
+  if (state.view === 'boss') return renderBoss(main);
   if (state.view === 'gantt') return renderGantt(main, tasks);
   if (state.view === 'list') return renderList(main, tasks);
   return renderBoard(main, tasks);
@@ -553,6 +564,94 @@ function wire() {
   setInterval(() => { if (!document.hidden && !$('#drawer').classList.contains('open')) load(); }, 60000);
 }
 
+// ---------- boss: clock + work record ----------
+function renderClock() {
+  const t = state.today, b = $('#clockBtn');
+  if (!t) return;
+  b.classList.remove('in', 'late', 'out');
+  if (!t.clock_in) { b.textContent = t.late && t.workday ? 'Clock in · late' : 'Clock in'; if (t.late && t.workday) b.classList.add('late'); }
+  else if (!t.clock_out) { b.textContent = `In ${t.clock_in} · Clock out`; b.classList.add(t.late ? 'late' : 'in'); }
+  else { b.textContent = `${t.clock_in}–${t.clock_out}`; b.classList.add('out'); }
+}
+
+async function clockAction() {
+  const t = state.today;
+  if (t.clock_in && !t.clock_out) {
+    if (!t.eod_report && !confirm('No end-of-day report filed yet. Clock out anyway?')) { state.view = 'boss'; renderChrome(); return render(); }
+    await api('POST', '/api/work/clock-out'); toast('Clocked out');
+  } else if (!t.clock_in) {
+    const r = await api('POST', '/api/work/clock-in');
+    toast(r.late ? `Clocked in ${r.clock_in}. Late.` : `Clocked in ${r.clock_in}. On time.`);
+  } else return;
+  load();
+}
+
+const pct = (v) => (v == null ? '—' : `${v}%`);
+const tile = (label, value, sub = '', tone = '') => `<div class="tile ${tone}"><div class="tile-v">${value}</div><div class="tile-l">${label}</div>${sub ? `<div class="tile-s">${sub}</div>` : ''}</div>`;
+const taskLine = (t) => `<li class="tl ${t.status === 'done' ? 'done' : ''}" data-open="${t.id}"><span class="status-tag ${t.status || ''}">${STATUS[t.status] || 'Overdue'}</span><span>${esc(t.name)}</span>${t.deadline ? `<span class="mono muted">${fmtDeadline(t.deadline)}</span>` : ''}</li>`;
+
+async function renderBoss(main) {
+  main.innerHTML = `<div class="empty"><div>Loading your record…</div></div>`;
+  const [sc, ex] = await Promise.all([api('GET', '/api/work/scorecard?days=30'), api('GET', '/api/work/excuses?days=30')]);
+  if (state.view !== 'boss') return;
+  const t = state.today, a = sc.attendance, d = sc.delivery, c = sc.commitments;
+  const dateLabel = new Date(`${t.date}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  const status = !t.workday ? 'Weekend.' :
+    !t.clock_in ? (t.late ? `Not clocked in. Work started at ${t.work_hours.split('-')[0]}.` : `Work starts at ${t.work_hours.split('-')[0]}.`) :
+    t.clock_out ? `Worked ${t.clock_in}–${t.clock_out}.` : `In since ${t.clock_in}${t.late ? ' — late' : ' — on time'}.`;
+  const commits = t.commitments.length
+    ? `<ul class="tlist">${t.commitments.map(taskLine).join('')}</ul>`
+    : `<p class="muted">No commitments yet. Tick your top 3 tasks on the Board or List, then press <b>Commit today</b>.</p>`;
+  const dueAndOverdue = [...t.overdue.map((x) => ({ ...x, status: null })), ...t.due_today.filter((x) => !t.overdue.some((o) => o.id === x.id))];
+
+  main.innerHTML = `<div class="boss">
+    <section class="boss-hero ${t.late && t.workday && !t.clock_out ? 'late' : ''}">
+      <div>
+        <div class="overline mono">${esc(dateLabel)} · hours ${t.work_hours}</div>
+        <h2>${esc(status)}</h2>
+        <div class="mono hero-sub">On-time streak: <b>${a.streak_on_time}</b> day${a.streak_on_time === 1 ? '' : 's'}</div>
+      </div>
+      <div class="hero-actions">
+        ${!t.clock_in ? `<button class="btn green" data-clock>Clock in</button>` : !t.clock_out ? `<button class="btn ghost" data-clock>Clock out</button>` : ''}
+      </div>
+    </section>
+
+    <div class="tiles">
+      ${tile('On-time arrivals', pct(a.on_time_pct), `${a.on_time}/${a.working_days} days · ${a.absent} absent`, a.on_time_pct != null && a.on_time_pct < 80 ? 'bad' : '')}
+      ${tile('Delivered on time', `${d.on_time}/${d.completed}`, `${d.late} late`, d.late ? 'bad' : '')}
+      ${tile('Commitments kept', pct(c.kept_pct), `${c.kept}/${c.committed}`, c.kept_pct != null && c.kept_pct < 80 ? 'bad' : '')}
+      ${tile('Excuses logged', d.slips_with_excuses, 'last 30 days', d.slips_with_excuses > 3 ? 'bad' : '')}
+      ${tile('Overdue now', d.overdue_now, '', d.overdue_now ? 'bad' : '')}
+      ${tile('EOD reports', `${sc.eod_reports.filed}/${sc.eod_reports.due}`, 'filed / due', sc.eod_reports.filed < sc.eod_reports.due ? 'bad' : '')}
+    </div>
+
+    <div class="boss-grid">
+      <section class="panel"><h3>Today's commitments</h3>${commits}</section>
+      <section class="panel"><h3>Due today & overdue</h3>${dueAndOverdue.length ? `<ul class="tlist">${dueAndOverdue.map(taskLine).join('')}</ul>` : '<p class="muted">Nothing due. Get ahead.</p>'}</section>
+      <section class="panel"><h3>End-of-day report</h3>
+        ${t.eod_report ? `<p class="eod-filed">${esc(t.eod_report)}</p>` :
+          `<textarea id="eodText" rows="5" placeholder="What shipped today? What didn't, and why? What's first tomorrow?"></textarea>
+           <button class="btn primary" id="eodSubmit">File report</button>`}
+      </section>
+      <section class="panel"><h3>Excuse log <span class="count">${ex.length}</span></h3>
+        ${ex.length ? `<ul class="xlist">${ex.slice(0, 12).map((e) => `<li><div><b>${esc(e.task_name)}</b> <span class="mono muted">${e.kind === 'sprint_moved' ? `${e.old_value} → ${e.new_value}` : 'deadline pushed'}</span></div>
+          <div class="reason">“${esc(e.reason)}”</div><div class="mono muted">${fmtStamp(e.created_at)}</div></li>`).join('')}</ul>` : '<p class="muted">Clean. Keep it that way.</p>'}
+      </section>
+      <section class="panel wide"><h3>Last working days</h3>
+        <table class="ledger mono"><tr><th>Date</th><th>In</th><th>Out</th><th>Kept</th><th>EOD</th></tr>
+        ${sc.ledger.slice(0, 10).map((l) => `<tr><td>${fmtDate(l.date)}</td><td class="${!l.in ? 'bad' : l.in > t.work_hours.split('-')[0] ? 'warn' : ''}">${l.in || 'absent'}</td><td>${l.out || '—'}</td><td>${l.committed ? `${l.kept}/${l.committed}` : '—'}</td><td>${l.eod ? '✓' : '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Starts the first day you clock in.</td></tr>'}
+        </table>
+      </section>
+    </div>
+  </div>`;
+  main.querySelectorAll('[data-clock]').forEach((b) => b.addEventListener('click', clockAction));
+  main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', () => openDrawer(state.tasks.find((x) => x.id === +el.dataset.open))));
+  $('#eodSubmit')?.addEventListener('click', async () => {
+    try { await api('POST', '/api/work/eod', { report: $('#eodText').value }); toast('Report filed'); load(); }
+    catch (e) { toast(e.message); }
+  });
+}
+
 // ---------- bulk action bar ----------
 function renderBulk() {
   const n = state.selected.size;
@@ -621,6 +720,15 @@ function wireBulk() {
     load();
   });
   $('#bClear').addEventListener('click', () => { state.selected.clear(); refreshSel(); });
+  $('#bCommit').addEventListener('click', async () => {
+    const ids = [...state.selected];
+    try {
+      await api('PUT', '/api/work/commitments', { ids });
+      toast(`Committed to ${ids.length} task${ids.length === 1 ? '' : 's'} today${ids.length > 3 ? ' — ambitious. Deliver.' : ''}`);
+      state.selected.clear(); load();
+    } catch (e) { toast(e.message); }
+  });
+  $('#clockBtn').addEventListener('click', clockAction);
 }
 
 wire();

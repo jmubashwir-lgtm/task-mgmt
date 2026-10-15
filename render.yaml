@@ -1,0 +1,15 @@
+# Render Blueprint: one free web service. The database is Supabase (set DATABASE_URL).
+services:
+  - type: web
+    name: task-mgmt
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        sync: false   # paste the Supabase session-pooler connection string in Render

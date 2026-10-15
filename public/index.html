@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Manager</title>
+  <link rel="icon" href="/hex.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Header: logomark + wordmark, current sprint, summary -->
+  <header class="topbar">
+    <div class="brand">
+      <svg class="hex" viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,7 87,28.5 87,71.5 50,93 13,71.5 13,28.5"/></svg>
+      <span class="wordmark">Task Manager</span>
+    </div>
+    <div class="sprint-pill mono" id="sprintPill">—</div>
+    <div class="stats" id="stats"></div>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
+  </header>
+
+  <!-- Toolbar: views, grouping, filters -->
+  <nav class="toolbar">
+    <div class="tabs" role="tablist">
+      <button class="tab" data-view="board">Board</button>
+      <button class="tab" data-view="list">List</button>
+      <button class="tab" data-view="gantt">Gantt</button>
+    </div>
+    <label class="field-inline" id="groupWrap">
+      <span class="mono">List by</span>
+      <select id="groupBy">
+        <option value="status">Status</option>
+        <option value="category">Category</option>
+        <option value="sprint">Sprint</option>
+        <option value="deadline">Deadline</option>
+      </select>
+    </label>
+    <label class="field-inline" id="zoomWrap" hidden>
+      <span class="mono">Zoom</span>
+      <select id="zoom">
+        <option value="34">Days</option>
+        <option value="14">Weeks</option>
+      </select>
+    </label>
+    <div class="filters">
+      <select id="fCategory"><option value="">All categories</option></select>
+      <select id="fSprint"><option value="">All sprints</option></select>
+      <input id="fSearch" type="search" placeholder="Search">
+      <label class="check mono"><input type="checkbox" id="fDone" checked> Done</label>
+    </div>
+  </nav>
+
+  <!-- Quick add -->
+  <form class="quickadd" id="quickAdd" autocomplete="off">
+    <input id="qaName" placeholder="Add a task and press Enter" required>
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+
+  <main id="view"></main>
+
+  <!-- Task drawer -->
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <form id="taskForm" autocomplete="off">
+      <div class="drawer-head">
+        <span class="overline mono" id="drawerTitle">Task</span>
+        <button type="button" class="icon-btn" id="closeDrawer" aria-label="Close">✕</button>
+      </div>
+      <label class="field"><span>Task name</span><input name="name" required></label>
+      <label class="field"><span>Category <em class="mono">type a new name to create</em></span>
+        <input name="category" list="catList"><datalist id="catList"></datalist></label>
+      <div class="field"><span>Status</span>
+        <div class="seg" id="statusSeg">
+          <button type="button" data-v="todo">To do</button>
+          <button type="button" data-v="in_progress">In progress</button>
+          <button type="button" data-v="done">Done</button>
+        </div>
+      </div>
+      <div class="row2">
+        <label class="field"><span>Start</span><input type="date" name="start_date"></label>
+        <label class="field"><span>Deadline</span><input type="datetime-local" name="deadline"></label>
+      </div>
+      <label class="field"><span>Sprint</span>
+        <div class="row2 tight">
+          <select name="sprint_year"></select>
+          <select name="sprint_number"></select>
+        </div>
+      </label>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="4"></textarea></label>
+      <dl class="meta mono" id="meta"></dl>
+      <div class="drawer-actions">
+        <button type="button" class="btn danger" id="deleteBtn">Delete</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </aside>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="/vendor/sortable.js"></script>
+  <script src="/sprint.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

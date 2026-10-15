@@ -1,0 +1,147 @@
+// MCP endpoint: lets Claude read and change tasks.
+// Claude connects to https://<your-app>/mcp as a custom connector.
+// "Stateless" mode: every request builds a fresh server, so nothing is held in memory
+// between calls — ideal for Render, which can restart the app at any time.
+const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+const { z } = require('zod');
+const svc = require('./service');
+
+const londonNow = () =>
+  new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// Shape each task the way Claude finds easiest to read.
+const brief = (t) => ({
+  id: t.id, name: t.name, category: t.category_name, status: t.status,
+  start_date: t.start_date,
+  deadline: t.deadline ? new Date(t.deadline).toLocaleString('en-GB', { timeZone: 'Europe/London', dateStyle: 'medium', timeStyle: 'short' }) + ' (London)' : null,
+  deadline_iso: t.deadline,
+  sprint: `${t.sprint_year}-S${String(t.sprint_number).padStart(2, '0')}`,
+  sprint_moved_count: t.sprint_update_count,
+  notes: t.notes, calendar_event_id: t.calendar_event_id,
+  created: t.created_at, last_updated: t.updated_at,
+});
+
+const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+const fail = (e) => ({ isError: true, content: [{ type: 'text', text: `Error: ${e.message}` }] });
+const run = (fn) => async (args) => { try { return ok(await fn(args)); } catch (e) { return fail(e); } };
+
+// Fields shared by create and update
+const deadlineDesc = 'Deadline. Either "YYYY-MM-DD HH:mm" (London time) or a full ISO timestamp. null clears it.';
+const taskFields = {
+  category: z.string().optional().describe('Category name. A new name creates the category.'),
+  status: z.enum(['todo', 'in_progress', 'done']).optional(),
+  notes: z.string().nullable().optional(),
+  start_date: z.string().optional().describe('YYYY-MM-DD. Left edge of the Gantt bar. Defaults to today.'),
+  deadline: z.string().nullable().optional().describe(deadlineDesc),
+  sprint_number: z.number().int().min(1).max(26).optional().describe('1-26. Sprints are 14-day blocks from 1 Jan.'),
+  sprint_year: z.number().int().optional(),
+};
+
+function buildServer() {
+  const server = new McpServer({ name: 'task-mgmt', version: '1.0.0' });
+
+  server.registerTool('get_overview', {
+    title: 'Overview',
+    description: 'Start here. Current London date/time, current sprint and its dates, counts of overdue / due-this-week tasks, and the category list.',
+    inputSchema: {},
+    annotations: { readOnlyHint: true },
+  }, run(async () => ({ now_london: londonNow(), ...(await svc.summary()), categories: (await svc.listCategories()).map((c) => c.name) })));
+
+  server.registerTool('list_tasks', {
+    title: 'List tasks',
+    description: 'List tasks with optional filters. Done tasks are excluded unless include_done is true.',
+    inputSchema: {
+      status: z.enum(['todo', 'in_progress', 'done']).optional(),
+      category: z.string().optional().describe('Category name'),
+      sprint_number: z.number().int().optional(),
+      sprint_year: z.number().int().optional(),
+      overdue_only: z.boolean().optional(),
+      search: z.string().optional().describe('Text to find in task names'),
+      include_done: z.boolean().optional(),
+    },
+    annotations: { readOnlyHint: true },
+  }, run(async (a) => {
+    const f = { status: a.status, sprint_number: a.sprint_number, sprint_year: a.sprint_year, overdue: a.overdue_only, q: a.search };
+    if (a.category) {
+      const c = (await svc.listCategories()).find((x) => x.name.toLowerCase() === a.category.toLowerCase());
+      if (!c) return [];
+      f.category_id = c.id;
+    }
+    let rows = await svc.listTasks(f);
+    if (!a.include_done && a.status !== 'done') rows = rows.filter((t) => t.status !== 'done');
+    return rows.map(brief);
+  }));
+
+  server.registerTool('get_task', {
+    title: 'Get task',
+    description: 'Full details of one task by id.',
+    inputSchema: { id: z.number().int() },
+    annotations: { readOnlyHint: true },
+  }, run(async ({ id }) => brief(await svc.getTask(id))));
+
+  server.registerTool('create_task', {
+    title: 'Create task',
+    description: 'Create a task. If no sprint is given, it goes in the sprint containing the deadline (or the current sprint).',
+    inputSchema: { name: z.string(), ...taskFields },
+  }, run(async (a) => brief(await svc.createTask({ ...a }))));
+
+  server.registerTool('update_task', {
+    title: 'Update task',
+    description: 'Change any fields of a task. Changing the sprint increases its "sprint moved" count. ' +
+      'After blocking calendar time, save the Google Calendar event id here as calendar_event_id.',
+    inputSchema: { id: z.number().int(), name: z.string().optional(), ...taskFields,
+      calendar_event_id: z.string().nullable().optional().describe('Google Calendar event id of the time block') },
+    annotations: { idempotentHint: true },
+  }, run(async ({ id, ...a }) => brief(await svc.updateTask(id, a))));
+
+  server.registerTool('move_to_sprint', {
+    title: 'Move to sprint',
+    description: 'Move a task to another sprint ("next" = the sprint after its current one). Increases the sprint moved count.',
+    inputSchema: { id: z.number().int(), sprint: z.union([z.literal('next'), z.number().int().min(1).max(26)]), sprint_year: z.number().int().optional() },
+  }, run(async ({ id, sprint, sprint_year }) => {
+    const t = await svc.getTask(id);
+    let y = sprint_year || t.sprint_year, n = sprint;
+    if (sprint === 'next') { n = t.sprint_number === 26 ? 1 : t.sprint_number + 1; if (t.sprint_number === 26) y = t.sprint_year + 1; }
+    return brief(await svc.updateTask(id, { sprint_year: y, sprint_number: n }));
+  }));
+
+  server.registerTool('complete_task', {
+    title: 'Complete task',
+    description: 'Mark a task as done.',
+    inputSchema: { id: z.number().int() },
+    annotations: { idempotentHint: true },
+  }, run(async ({ id }) => brief(await svc.updateTask(id, { status: 'done' }))));
+
+  server.registerTool('delete_task', {
+    title: 'Delete task',
+    description: 'Permanently delete a task. Returns its calendar_event_id so the linked calendar block can be removed too.',
+    inputSchema: { id: z.number().int() },
+    annotations: { destructiveHint: true },
+  }, run(async ({ id }) => ({ deleted: true, ...(await svc.deleteTask(id)) })));
+
+  server.registerTool('sprint_for_date', {
+    title: 'Sprint for date',
+    description: 'Which sprint a date (YYYY-MM-DD) falls in, with its start and end dates.',
+    inputSchema: { date: z.string() },
+    annotations: { readOnlyHint: true },
+  }, run(async ({ date }) => { const s = svc.sprintFor(date); return svc.sprintRange(s.year, s.number); }));
+
+  return server;
+}
+
+// Express handler for POST /mcp
+async function handleMcp(req, res) {
+  const server = buildServer();
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  res.on('close', () => { transport.close(); server.close(); });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (e) {
+    console.error('MCP error', e);
+    if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
+  }
+}
+
+module.exports = { handleMcp };

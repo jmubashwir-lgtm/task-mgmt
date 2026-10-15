@@ -39,6 +39,9 @@ app.delete('/api/categories/:id', h((r) => svc.deleteCategory(+r.params.id)));
 
 // Tasks
 app.get('/api/tasks', h((r) => svc.listTasks(r.query)));
+// Bulk (registered before /:id so "bulk" isn't read as an id)
+app.post('/api/tasks/bulk-update', h((r) => svc.bulkUpdate(r.body.ids, r.body.patch)));
+app.post('/api/tasks/bulk-delete', h((r) => svc.bulkDelete(r.body.ids)));
 app.get('/api/tasks/:id', h((r) => svc.getTask(+r.params.id)));
 app.post('/api/tasks', h((r) => svc.createTask(r.body)));
 app.patch('/api/tasks/:id', h((r) => svc.updateTask(+r.params.id, r.body)));

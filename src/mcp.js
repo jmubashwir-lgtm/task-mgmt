@@ -120,6 +120,30 @@ function buildServer() {
     annotations: { destructiveHint: true },
   }, run(async ({ id }) => ({ deleted: true, ...(await svc.deleteTask(id)) })));
 
+  server.registerTool('bulk_update_tasks', {
+    title: 'Bulk update tasks',
+    description: 'Apply the same change to several tasks at once (use list_tasks first to get ids). ' +
+      'Use move_to_next_sprint to push each task one sprint forward, or shift_deadline_days to move each deadline by N days.',
+    inputSchema: {
+      ids: z.array(z.number().int()).min(1),
+      status: z.enum(['todo', 'in_progress', 'done']).optional(),
+      category: z.string().optional().describe('Category name; a new name creates it'),
+      sprint_number: z.number().int().min(1).max(26).optional(),
+      sprint_year: z.number().int().optional(),
+      move_to_next_sprint: z.boolean().optional(),
+      deadline: z.string().nullable().optional().describe(deadlineDesc),
+      shift_deadline_days: z.number().int().optional(),
+    },
+  }, run(async ({ ids, move_to_next_sprint, shift_deadline_days, ...a }) =>
+    svc.bulkUpdate(ids, { ...a, sprint_next: move_to_next_sprint, deadline_shift_days: shift_deadline_days })));
+
+  server.registerTool('bulk_delete_tasks', {
+    title: 'Bulk delete tasks',
+    description: 'Permanently delete several tasks. Returns linked calendar event ids so those blocks can be removed too.',
+    inputSchema: { ids: z.array(z.number().int()).min(1) },
+    annotations: { destructiveHint: true },
+  }, run(async ({ ids }) => svc.bulkDelete(ids)));
+
   server.registerTool('sprint_for_date', {
     title: 'Sprint for date',
     description: 'Which sprint a date (YYYY-MM-DD) falls in, with its start and end dates.',

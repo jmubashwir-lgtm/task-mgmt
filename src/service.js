@@ -139,6 +139,59 @@ async function deleteTask(id) {
   return rows[0];
 }
 
+// ---------- bulk ----------
+// One UPDATE statement changes every selected task at once (all-or-nothing).
+// Supported changes: status, category, sprint (set, or "next" relative to each task),
+// deadline (set to a date, clear, or shift each task's deadline by N days).
+function checkIds(ids) {
+  if (!Array.isArray(ids) || !ids.length) throw new BadRequest('ids must be a non-empty array');
+  if (ids.length > 500) throw new BadRequest('At most 500 tasks at a time');
+  return ids.map((x) => { const n = Number(x); if (!Number.isInteger(n)) throw new BadRequest('ids must be integers'); return n; });
+}
+
+async function bulkUpdate(ids, input = {}) {
+  ids = checkIds(ids);
+  input = { ...input };
+  await resolveCategory(input);
+  validate(input);
+  const set = [], args = [ids];
+  const param = (v) => { args.push(v); return `$${args.length}`; };
+
+  if (input.status !== undefined) set.push(`status = ${param(input.status)}`);
+  if (input.category_id !== undefined) set.push(`category_id = ${param(input.category_id)}`);
+  if (input.sprint_next) {
+    // Every task moves one sprint forward from wherever it is (S26 rolls into next year's S01)
+    set.push(`sprint_number = CASE WHEN sprint_number = 26 THEN 1 ELSE sprint_number + 1 END`);
+    set.push(`sprint_year   = CASE WHEN sprint_number = 26 THEN sprint_year + 1 ELSE sprint_year END`);
+  } else if (input.sprint_number !== undefined) {
+    set.push(`sprint_number = ${param(input.sprint_number)}`);
+    set.push(`sprint_year = ${param(input.sprint_year || sprintFor().year)}`);
+  }
+  if (input.deadline !== undefined) set.push(`deadline = ${param(input.deadline)}`);
+  else if (input.deadline_shift_days) {
+    const d = Number(input.deadline_shift_days);
+    if (!Number.isInteger(d)) throw new BadRequest('deadline_shift_days must be an integer');
+    set.push(`deadline = deadline + make_interval(days => ${param(d)})`);  // tasks without a deadline stay without
+  }
+  if (!set.length) throw new BadRequest('Nothing to change');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL TIME ZONE 'Europe/London'`); // "+1 day" keeps the same London clock time across clock changes
+    const { rows } = await client.query(`UPDATE tasks SET ${set.join(', ')} WHERE id = ANY($1) RETURNING id`, args);
+    await client.query('COMMIT');
+    return { updated: rows.length, ids: rows.map((r) => r.id) };
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
+}
+
+async function bulkDelete(ids) {
+  ids = checkIds(ids);
+  const { rows } = await pool.query('DELETE FROM tasks WHERE id = ANY($1) RETURNING id, name, calendar_event_id', [ids]);
+  return { deleted: rows.length, calendar_events_to_remove: rows.filter((r) => r.calendar_event_id) };
+}
+
 // Overview used by Claude and the UI header.
 async function summary() {
   const cur = sprintFor();
@@ -155,6 +208,6 @@ async function summary() {
 
 module.exports = {
   listCategories, createCategory, updateCategory, deleteCategory,
-  listTasks, getTask, createTask, updateTask, deleteTask, summary,
+  listTasks, getTask, createTask, updateTask, deleteTask, summary, bulkUpdate, bulkDelete,
   sprintFor, sprintRange, STATUSES,
 };

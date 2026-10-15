@@ -10,6 +10,8 @@ const state = {
   view: pref('view', 'board'), groupBy: pref('groupBy', 'status'), zoom: +pref('zoom', 34),
   filter: { category: '', sprint: '', q: '', showDone: true },
   editing: null,      // task being edited in the drawer (null = new)
+  selected: new Set(), // ids ticked for bulk edits
+  lastSel: null,      // anchor for shift-click range selection
   draft: {},          // prefilled values for a new task
 };
 
@@ -52,8 +54,11 @@ async function load() {
     api('GET', '/api/tasks'), api('GET', '/api/categories'), api('GET', '/api/summary'),
   ]);
   Object.assign(state, { tasks, categories, summary });
+  const ids = new Set(tasks.map((t) => t.id));
+  state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); }); // drop deleted tasks
   renderChrome();
   render();
+  renderBulk();
 }
 
 async function patchTask(id, patch) {
@@ -166,6 +171,46 @@ const EMPTY = `<div class="empty">
     `<polygon points="${x},${y-18} ${x+16},${y-9} ${x+16},${y+9} ${x},${y+18} ${x-16},${y+9} ${x-16},${y-9}" fill="none" stroke="#65BC7B" stroke-width="4"/>`).join('')}</svg>
   <h3>Nothing here yet</h3><div>Add a task above, or ask Claude to add one.</div></div>`;
 
+// ---------- selection (bulk edit) ----------
+const selBox = (id) => `<button type="button" class="sel ${state.selected.has(id) ? 'on' : ''}" data-sel="${id}" aria-label="Select task"></button>`;
+const groupSel = (items) => items.length
+  ? `<button type="button" class="sel" data-selgroup="${items.map((t) => t.id).join(',')}" aria-label="Select all in group"></button>` : '';
+
+function onItemClick(e, id) {
+  if (e.shiftKey && state.lastSel != null) return selectRange(id);
+  if (e.target.closest('.sel') || e.metaKey || e.ctrlKey || state.selected.size) return toggleSel(id);
+  openDrawer(state.tasks.find((t) => t.id === id));
+}
+function toggleSel(id) {
+  state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+  state.lastSel = id; refreshSel();
+}
+function selectRange(id) {
+  const order = [...document.querySelectorAll('#view [data-sel]')].map((b) => +b.dataset.sel);
+  const a = order.indexOf(state.lastSel), b = order.indexOf(id);
+  if (a < 0 || b < 0) return toggleSel(id);
+  order.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => state.selected.add(x));
+  state.lastSel = id; refreshSel();
+}
+function toggleGroup(ids) {
+  const all = ids.every((id) => state.selected.has(id));
+  ids.forEach((id) => (all ? state.selected.delete(id) : state.selected.add(id)));
+  refreshSel();
+}
+// Update ticks in place (no full re-render, so scroll position is kept)
+function refreshSel() {
+  document.querySelectorAll('#view [data-sel]').forEach((b) => {
+    const on = state.selected.has(+b.dataset.sel);
+    b.classList.toggle('on', on);
+    b.closest('.card, .row, .g-label')?.classList.toggle('selected', on);
+  });
+  document.querySelectorAll('#view [data-selgroup]').forEach((b) => {
+    const ids = b.dataset.selgroup.split(',').map(Number), n = ids.filter((id) => state.selected.has(id)).length;
+    b.classList.toggle('on', n === ids.length); b.classList.toggle('partial', n > 0 && n < ids.length);
+  });
+  renderBulk();
+}
+
 // ---------- views ----------
 function render() {
   const tasks = visibleTasks();
@@ -182,13 +227,14 @@ function renderBoard(main, tasks) {
     const items = tasks.filter(g.match);
     return `<section class="col">
       <div class="col-head">
-        <div class="col-title">${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
+        <div class="col-title">${groupSel(items)}${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
           <span class="count">${items.length}</span></div>
         ${g.locked ? '' : `<button class="col-add" data-add="${g.key}" title="Add task here">+</button>`}
       </div>
       ${g.sub ? `<div class="col-sub" style="margin:-8px 4px 10px">${g.sub}</div>` : ''}
       <div class="drop" data-key="${g.key}">${items.map((t) => `
-        <article class="card ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
+        <article class="card ${t.status === 'done' ? 'done' : ''} ${state.selected.has(t.id) ? 'selected' : ''}" data-id="${t.id}">
+          ${selBox(t.id)}
           <div class="chips">${catChip(t)}${state.groupBy !== 'status' ? `<span class="status-tag ${t.status}">${STATUS[t.status]}</span>` : ''}</div>
           <div class="card-name">${esc(t.name)}</div>
           <div class="chips">${infoChips(t)}</div>
@@ -204,12 +250,12 @@ function renderList(main, tasks) {
     gs.map((g) => {
       const items = tasks.filter(g.match);
       return `<section class="group">
-        <div class="group-head">${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
+        <div class="group-head">${groupSel(items)}${g.color ? `<span class="dot" style="background:${g.color}"></span>` : ''}${esc(g.title)}
           <span class="count">${items.length}</span>${g.sub ? `<span class="col-sub">${g.sub}</span>` : ''}
           ${g.locked ? '' : `<button class="col-add" data-add="${g.key}" title="Add task here">+</button>`}</div>
         <div class="list drop" data-key="${g.key}">${items.map((t) => `
-          <div class="row ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
-            <span class="handle" aria-hidden="true">⠿</span>
+          <div class="row ${t.status === 'done' ? 'done' : ''} ${state.selected.has(t.id) ? 'selected' : ''}" data-id="${t.id}">
+            ${selBox(t.id)}
             <span class="name">${esc(t.name)}</span>
             <span class="cell hide-m">${catChip(t) || '—'}</span>
             <span class="cell hide-m"><span class="status-tag ${t.status}">${STATUS[t.status]}</span></span>
@@ -232,6 +278,7 @@ function wireDrag(main, gs, itemSel) {
     new Sortable(el, {
       group: g.locked ? { name: 'locked-' + g.key, pull: false, put: false } : 'tasks',
       draggable: itemSel, animation: 150,
+      filter: '.sel', preventOnFilter: false,       // clicking a tick box never starts a drag
       delay: 160, delayOnTouchOnly: true,           // lets you scroll on a phone without grabbing
       onEnd: (evt) => {
         if (evt.from === evt.to && evt.oldIndex === evt.newIndex) return;
@@ -247,7 +294,9 @@ function wireDrag(main, gs, itemSel) {
       },
     });
   });
-  main.querySelectorAll(itemSel).forEach((el) => el.addEventListener('click', () => openDrawer(state.tasks.find((t) => t.id === +el.dataset.id))));
+  main.querySelectorAll(itemSel).forEach((el) => el.addEventListener('click', (e) => onItemClick(e, +el.dataset.id)));
+  main.querySelectorAll('[data-selgroup]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); toggleGroup(b.dataset.selgroup.split(',').map(Number)); }));
+  refreshSel();
   main.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => openDrawer(null, { ...byKey[b.dataset.add].patch })));
 }
 
@@ -297,7 +346,7 @@ function renderGantt(main, tasks) {
         const col = t.category_color || '#0C0C0D';
         const dark = ['#7BFDFD', '#FCED67', '#7CFE86'].includes((col || '').toUpperCase());
         return `<div class="g-row">
-          <div class="g-label" data-open="${t.id}">${t.category_color ? `<span class="dot" style="background:${t.category_color}"></span>` : ''}<span>${esc(t.name)}</span></div>
+          <div class="g-label ${state.selected.has(t.id) ? 'selected' : ''}" data-open="${t.id}">${selBox(t.id)}${t.category_color ? `<span class="dot" style="background:${t.category_color}"></span>` : ''}<span>${esc(t.name)}</span></div>
           <div class="g-track" style="width:${W}px">
             <div class="g-bar ${t.deadline ? '' : 'nodeadline'} ${t.status === 'done' ? 'done' : ''} ${isOverdue(t) ? 'overdue' : ''}"
                  data-id="${t.id}" style="left:${x(s)}px;width:${(dayDiff(s, e) + 1) * dw}px;background:${col};${dark ? 'color:#0C0C0D' : ''}"
@@ -312,7 +361,7 @@ function renderGantt(main, tasks) {
   // scroll so "today" is near the left edge
   $('.gantt').scrollLeft = Math.max(0, x(today()) - 3 * dw);
 
-  main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', () => openDrawer(state.tasks.find((t) => t.id === +el.dataset.open))));
+  main.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', (e) => onItemClick(e, +el.dataset.open)));
   main.querySelectorAll('.g-bar').forEach((bar) => wireBar(bar, dw));
 }
 
@@ -479,7 +528,12 @@ function wire() {
   $('#taskForm').addEventListener('submit', saveDrawer);
   $('#closeDrawer').addEventListener('click', closeDrawer);
   $('#scrim').addEventListener('click', closeDrawer);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if ($('#drawer').classList.contains('open')) closeDrawer();
+    else if (state.selected.size) { state.selected.clear(); refreshSel(); }
+  });
+  wireBulk();
   $('#deleteBtn').addEventListener('click', async () => {
     if (!state.editing || !confirm(`Delete "${state.editing.name}"?`)) return;
     await api('DELETE', `/api/tasks/${state.editing.id}`); closeDrawer(); toast('Deleted'); load();
@@ -497,6 +551,76 @@ function wire() {
   // Pick up changes Claude makes: refresh when you come back to the tab, and every minute.
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
   setInterval(() => { if (!document.hidden && !$('#drawer').classList.contains('open')) load(); }, 60000);
+}
+
+// ---------- bulk action bar ----------
+function renderBulk() {
+  const n = state.selected.size;
+  document.body.classList.toggle('selecting', n > 0);
+  $('#bulkBar').hidden = !n;
+  if (!n) return;
+  $('#bulkCount').textContent = `${n} selected`;
+  // Sprint choices: current sprint + the next 12
+  const sel = $('#bSprint');
+  if (!sel.dataset.filled) {
+    let { year, number } = currentSprint(); const opts = [];
+    for (let i = 0; i < 13; i++) {
+      const r = Sprint.sprintRange(year, number);
+      opts.push(`<option value="${year}-${number}">${r.label} · ${fmtDate(r.start)}</option>`);
+      number === 26 ? (year++, number = 1) : number++;
+    }
+    sel.innerHTML = `<option value="">Sprint…</option><option value="next">→ Next sprint (each)</option>` + opts.join('');
+    sel.dataset.filled = '1';
+  }
+}
+
+async function bulk(patch, label) {
+  const ids = [...state.selected];
+  try {
+    const r = await api('POST', '/api/tasks/bulk-update', { ids, patch });
+    toast(`${label} · ${r.updated} task${r.updated === 1 ? '' : 's'}`);
+  } catch (e) { toast(e.message); }
+  load();
+}
+
+function wireBulk() {
+  $('#bStatus').addEventListener('change', (e) => {
+    const v = e.target.value; e.target.value = '';
+    if (v) bulk({ status: v }, `Status → ${STATUS[v]}`);
+  });
+  const setCat = () => {
+    const v = $('#bCategory').value.trim(); $('#bCategory').value = '';
+    bulk(v ? { category: v } : { category_id: null }, v ? `Category → ${v}` : 'Category cleared');
+  };
+  $('#bCatApply').addEventListener('click', setCat);
+  $('#bCategory').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setCat(); } });
+  $('#bSprint').addEventListener('change', (e) => {
+    const v = e.target.value; e.target.value = '';
+    if (!v) return;
+    if (v === 'next') return bulk({ sprint_next: true }, 'Moved to next sprint (slip +1)');
+    const [y, n] = v.split('-').map(Number);
+    bulk({ sprint_year: y, sprint_number: n }, `Sprint → ${sprintLabel(y, n)}`);
+  });
+  $('#bDeadline').addEventListener('change', (e) => {
+    const v = e.target.value; e.target.value = '';
+    if (v) bulk({ deadline: v }, `Deadline → ${fmtDate(v)} 17:00`);   // date only = 5pm London
+  });
+  document.querySelectorAll('[data-shift]').forEach((b) => b.addEventListener('click', () => {
+    const d = +b.dataset.shift;
+    bulk({ deadline_shift_days: d }, `Deadlines ${d > 0 ? '+' : ''}${d}d`);
+  }));
+  $('#bDelete').addEventListener('click', async () => {
+    const n = state.selected.size;
+    if (!confirm(`Delete ${n} task${n === 1 ? '' : 's'}? This can't be undone.`)) return;
+    try {
+      const r = await api('POST', '/api/tasks/bulk-delete', { ids: [...state.selected] });
+      state.selected.clear();
+      const cal = r.calendar_events_to_remove.length;
+      toast(`Deleted ${r.deleted}${cal ? ` · ${cal} had calendar blocks — ask Claude to remove them` : ''}`);
+    } catch (e) { toast(e.message); }
+    load();
+  });
+  $('#bClear').addEventListener('click', () => { state.selected.clear(); refreshSel(); });
 }
 
 wire();

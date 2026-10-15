@@ -97,6 +97,22 @@
     </form>
   </aside>
 
+  <!-- Bulk action bar: appears when tasks are ticked -->
+  <div class="bulkbar" id="bulkBar" hidden>
+    <span class="bcount" id="bulkCount">0 selected</span>
+    <select id="bStatus" aria-label="Set status">
+      <option value="">Status…</option><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option>
+    </select>
+    <span class="bgroup"><input id="bCategory" list="catList" placeholder="Category…" aria-label="Set category"><button class="bbtn" id="bCatApply">Set</button></span>
+    <select id="bSprint" aria-label="Set sprint"></select>
+    <span class="bsep"></span>
+    <label class="blabel mono">Due <input type="date" id="bDeadline" aria-label="Set deadline"></label>
+    <span class="bgroup"><button class="bbtn" data-shift="-1">−1d</button><button class="bbtn" data-shift="1">+1d</button><button class="bbtn" data-shift="7">+1w</button></span>
+    <span class="bsep"></span>
+    <button class="bbtn danger" id="bDelete">Delete</button>
+    <button class="bbtn" id="bClear" aria-label="Clear selection">✕</button>
+  </div>
+
   <div class="toast" id="toast" role="status"></div>
 
   <script src="/vendor/sortable.js"></script>
